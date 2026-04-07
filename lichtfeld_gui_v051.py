@@ -358,7 +358,7 @@ class LichtFeldStudioDialog:
             {"name": "--init-extent", "default": "", "description": "Extent of random initialization", "enabled": False},
             {"name": "--init", "default": "", "description": "Initialize from splat file (.ply, .sog, .spz, .usd, .usda, .usdc, .usdz, .resume)", "enabled": False},
             {"name": "--max-width", "default": "3840", "description": "Max width of images in px", "enabled": False},
-            {"name": "--import-cameras", "default": "", "description": "Import COLMAP cameras from sparse folder (no images required)", "enabled": False}
+            {"name": "--resize_factor", "default": "auto", "description": "Resize factor: auto, 1, 2, 4, 8", "enabled": False}
         ]
         
         self.create_option_widgets(parent, training_options, 0)
@@ -369,7 +369,7 @@ class LichtFeldStudioDialog:
             {"name": "--sh-degree", "default": "3", "description": "Max SH degree [0-3]", "enabled": False},
             {"name": "--sh-degree-interval", "default": "", "description": "SH degree interval", "enabled": False},
             {"name": "--min-opacity", "default": "", "description": "Minimum opacity threshold", "enabled": False},
-            {"name": "--resize_factor", "default": "auto", "description": "Resize factor: auto, 1, 2, 4, 8", "enabled": False},
+            {"name": "--import-cameras", "default": "", "description": "Import COLMAP cameras from sparse folder (no images required)", "enabled": False},
             {"name": "--timelapse-images", "default": "", "description": "Image filenames for timelapse (space-separated)", "enabled": False},
             {"name": "--timelapse-every", "default": "50", "description": "Render timelapse every N iterations", "enabled": False},
             {"name": "--ppisp-sidecar", "default": "", "description": "Path to PPISP sidecar (.ppisp) for frozen PPISP training", "enabled": False}
@@ -843,11 +843,11 @@ class LichtFeldStudioDialog:
         """Get the option name by its index in the combined list"""
         all_option_names = [
             # Training options (0-11)
-            "--data-path", "--output-path", "--iter", "--max-cap", "--images", 
-            "--test-every", "--steps-scaler", "--init-num-pts", "--init-extent", "--init", "--max-width", "--import-cameras",
+            "--data-path", "--output-path", "--iter", "--max-cap", "--images",
+            "--test-every", "--steps-scaler", "--init-num-pts", "--init-extent", "--init", "--max-width", "--resize_factor",
             # Rendering options (12-18)
-            "--sh-degree", "--sh-degree-interval", "--min-opacity", 
-            "--resize_factor", "--timelapse-images", "--timelapse-every", "--ppisp-sidecar",
+            "--sh-degree", "--sh-degree-interval", "--min-opacity",
+            "--import-cameras", "--timelapse-images", "--timelapse-every", "--ppisp-sidecar",
             # Optimization options (19)
             "--strategy",
             # Sparsity & Memory options (20-23)
@@ -1023,6 +1023,10 @@ class LichtFeldStudioDialog:
             self.no_alpha_as_mask_var.set(False)
             self.no_cpu_cache_var.set(False)
             self.no_fs_cache_var.set(False)
+            self.use_error_map_var.set(False)
+            self.use_edge_map_var.set(False)
+            self.ppisp_freeze_var.set(False)
+            self.debug_python_var.set(False)
             
             self.reset_options_to_defaults()
             
@@ -1037,15 +1041,15 @@ class LichtFeldStudioDialog:
         default_values = [
             # Training options (0-11)
             ("", True), ("./output", True), ("30000", True), ("", False), ("images", False),
-            ("", False), ("", False), ("", False), ("", False), ("", False), ("3840", False), ("", False),
-            # Rendering options (12-17)
-            ("3", False), ("", False), ("", False), ("auto", False), ("", False), ("50", False),
-            # Optimization options (18)
+            ("", False), ("", False), ("", False), ("", False), ("", False), ("3840", False), ("auto", False),
+            # Rendering options (12-18)
+            ("3", False), ("", False), ("", False), ("", False), ("", False), ("50", False), ("", False),
+            # Optimization options (19)
             ("mcmc", False),
-            # Sparsity & Memory (19-22)
+            # Sparsity & Memory (20-23)
             ("1", False), ("15000", False), ("0.0005", False), ("0.6", False),
-            # Logging & Masking (23-26)
-            ("info", False), ("", False), ("", False), ("none", False)
+            # Logging & Masking (24-28)
+            ("info", False), ("", False), ("", False), ("none", False), ("5678", False)
         ]
         
         for i, ((var, state_var), (val, enabled)) in enumerate(zip(zip(self.option_vars, self.option_states), default_values)):
@@ -1250,11 +1254,11 @@ class LichtFeldStudioDialog:
         """Get list of all option names in order"""
         return [
             # Training options (0-11)
-            "--data-path", "--output-path", "--iter", "--max-cap", "--images", 
-            "--test-every", "--steps-scaler", "--init-num-pts", "--init-extent", "--init", "--max-width", "--import-cameras",
+            "--data-path", "--output-path", "--iter", "--max-cap", "--images",
+            "--test-every", "--steps-scaler", "--init-num-pts", "--init-extent", "--init", "--max-width", "--resize_factor",
             # Rendering options (12-18)
-            "--sh-degree", "--sh-degree-interval", "--min-opacity", 
-            "--resize_factor", "--timelapse-images", "--timelapse-every", "--ppisp-sidecar",
+            "--sh-degree", "--sh-degree-interval", "--min-opacity",
+            "--import-cameras", "--timelapse-images", "--timelapse-every", "--ppisp-sidecar",
             # Optimization options (19)
             "--strategy",
             # Sparsity & Memory (20-23)

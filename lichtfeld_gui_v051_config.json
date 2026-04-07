@@ -78,11 +78,11 @@
             "enabled": false
         },
         "--max-width": {
-            "value": "3840",
+            "value": "1920",
             "enabled": false
         },
-        "--import-cameras": {
-            "value": "",
+        "--resize_factor": {
+            "value": "4",
             "enabled": false
         },
         "--sh-degree": {
@@ -97,8 +97,8 @@
             "value": "",
             "enabled": false
         },
-        "--resize_factor": {
-            "value": "auto",
+        "--import-cameras": {
+            "value": "",
             "enabled": false
         },
         "--timelapse-images": {
@@ -114,7 +114,7 @@
             "enabled": false
         },
         "--strategy": {
-            "value": "mcmc",
+            "value": "mrnf",
             "enabled": false
         },
         "--tile-mode": {
