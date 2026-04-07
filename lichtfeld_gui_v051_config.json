@@ -1,0 +1,157 @@
+{
+    "general": {
+        "train": false,
+        "no_interop": false,
+        "executable_path": "C:/ProgramPortable/LFS/bin/LichtFeld-Studio.exe",
+        "master_folder_path": "U:/CLI",
+        "base_output_name": "",
+        "use_frame_id": true,
+        "expert_mode": false,
+        "config_path": "",
+        "view_path": "",
+        "view_mode": false,
+        "resume_checkpoint": "",
+        "batch_mode": false,
+        "start_frame": "001",
+        "end_frame": "010",
+        "nth_frame": "1",
+        "eval": false,
+        "headless": true,
+        "enable_mip": false,
+        "bilateral_grid": false,
+        "save_eval_images": false,
+        "save_depth": false,
+        "random": false,
+        "gut": false,
+        "enable_sparsity": false,
+        "bg_modulation": false,
+        "ppisp": false,
+        "ppisp_controller": false,
+        "invert_masks": false,
+        "no_alpha_as_mask": false,
+        "no_cpu_cache": false,
+        "no_fs_cache": false,
+        "use_error_map": false,
+        "use_edge_map": false,
+        "ppisp_freeze": false,
+        "debug_python": false
+    },
+    "options": {
+        "--data-path": {
+            "value": "",
+            "enabled": true
+        },
+        "--output-path": {
+            "value": "./output",
+            "enabled": true
+        },
+        "--iter": {
+            "value": "30000",
+            "enabled": true
+        },
+        "--max-cap": {
+            "value": "",
+            "enabled": false
+        },
+        "--images": {
+            "value": "images",
+            "enabled": false
+        },
+        "--test-every": {
+            "value": "",
+            "enabled": false
+        },
+        "--steps-scaler": {
+            "value": "",
+            "enabled": false
+        },
+        "--init-num-pts": {
+            "value": "",
+            "enabled": false
+        },
+        "--init-extent": {
+            "value": "",
+            "enabled": false
+        },
+        "--init": {
+            "value": "",
+            "enabled": false
+        },
+        "--max-width": {
+            "value": "3840",
+            "enabled": false
+        },
+        "--import-cameras": {
+            "value": "",
+            "enabled": false
+        },
+        "--sh-degree": {
+            "value": "3",
+            "enabled": false
+        },
+        "--sh-degree-interval": {
+            "value": "",
+            "enabled": false
+        },
+        "--min-opacity": {
+            "value": "",
+            "enabled": false
+        },
+        "--resize_factor": {
+            "value": "auto",
+            "enabled": false
+        },
+        "--timelapse-images": {
+            "value": "",
+            "enabled": false
+        },
+        "--timelapse-every": {
+            "value": "50",
+            "enabled": false
+        },
+        "--ppisp-sidecar": {
+            "value": "",
+            "enabled": false
+        },
+        "--strategy": {
+            "value": "mcmc",
+            "enabled": false
+        },
+        "--tile-mode": {
+            "value": "1",
+            "enabled": false
+        },
+        "--sparsify-steps": {
+            "value": "15000",
+            "enabled": false
+        },
+        "--init-rho": {
+            "value": "0.0005",
+            "enabled": false
+        },
+        "--prune-ratio": {
+            "value": "0.6",
+            "enabled": false
+        },
+        "--log-level": {
+            "value": "info",
+            "enabled": false
+        },
+        "--log-file": {
+            "value": "",
+            "enabled": false
+        },
+        "--log-filter": {
+            "value": "",
+            "enabled": false
+        },
+        "--mask-mode": {
+            "value": "none",
+            "enabled": false
+        },
+        "--debug-python-port": {
+            "value": "5678",
+            "enabled": false
+        }
+    }
+}
