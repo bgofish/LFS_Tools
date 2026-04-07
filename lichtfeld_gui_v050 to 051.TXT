@@ -1,0 +1,57 @@
+V050 GUI → V051 Compatibility Analysis
+
+✅ Fully Compatible (no changes needed)
+All of these flags the GUI already uses are present unchanged in V051:
+--view, --resume, --data-path, --output-path, --output-name, --config, --init, --import-cameras, --iter, --sh-degree, --sh-degree-interval, --max-cap, --min-opacity, --steps-scaler, --tile-mode, --images, --test-every, --resize_factor, --max-width, --no-cpu-cache, --no-fs-cache, --undistort, --mask-mode, --invert-masks, --no-alpha-as-mask, --enable-sparsity, --sparsify-steps, --init-rho, --prune-ratio, --enable-mip, --bilateral-grid, --ppisp, --ppisp-controller, --bg-modulation, --gut, --eval, --save-eval-images, --save-depth, --timelapse-images, --timelapse-every, --headless, --train, --no-interop, --log-level, --log-file, --log-filter, --random, --init-num-pts, --init-extent
+
+⚠️ Issues to Address
+1. --strategy values are stale (line 366)
+The GUI shows "mcmc, adc, igs+" but V051 uses mcmc, mrnf, igs+ (with legacy aliases mnrf, lfs). The old value adc is gone. Update the description string:
+python# Change this:
+{"name": "--strategy", "default": "mcmc", "description": "Optimization strategy: mcmc, adc, igs+", ...}
+# To this:
+{"name": "--strategy", "default": "mcmc", "description": "Optimization strategy: mcmc, mrnf, igs+ (legacy: mnrf, lfs)", ...}
+2. --init file type hint is incomplete (line 342)
+The GUI description says .ply, .sog, .spz, .resume but V051 also accepts .usd, .usda, .usdc, .usdz. Minor cosmetic fix only — functionally fine if users manually type those extensions.
+3. View file browser missing USD formats (lines 572–586)
+browse_view_file() lists splat filetypes as *.ply *.sog *.spz but V051 now supports *.usd *.usda *.usdc *.usdz. The browse dialog won't show those files unless updated.
+
+🆕 New V051 Features Not Exposed in the GUI
+These are new flags in V051 that the GUI has no controls for (not breaking, just missing):
+New FlagPurpose--use-error-mapWeight MRNF refine signal by per-pixel SSIM error map--use-edge-mapWeight MRNF refine signal by Sobel edge map--ppisp-freezeFreeze PPISP learning--ppisp-sidecar=[path]Path to PPISP sidecar file--debug-pythonStart debugpy listener on port 5678--debug-python-port=[port]Custom debugpy port
+These would only matter if you want to expose them in the UI — the GUI will still work fine without them.
+
+Summary
+The GUI is functionally compatible with V051 — it won't generate any invalid commands. The only thing that could cause a real problem is if someone picks adc as a strategy value from the description hint, since that alias no longer exists. Everything else is cosmetic or additive.Can you update the PY file to reflect the changes2:21 PMReading the skill file for file readingReading the skill file for file readingI already have the full file content from earlier. Now I'll make all the targeted edits:Edited 4 files, ran a commandEdited 4 files, ran a commandNow add the new V051 boolean flags (--use-error-map, --use-edge-map, --ppisp-freeze, --debug-python) to the Special Modes section:Edited 2 filesEdited 2 filesNow add --ppisp-sidecar and --debug-python-port as parametered options in the appropriate tabs. --ppisp-sidecar belongs in Rendering Options, --debug-python-port in Logging:Edited 2 filesEdited 2 filesNow update get_all_option_names() and the generate_command / save/load settings to include the new variables:Fix 9: Update get_all_option_names to include new optionsFix 9: Update get_all_option_names to include new optionsNow update the save/load settings to persist the new boolean vars:Edited 2 filesEdited 2 filesNow find the generate_command method to add the new boolean flags to command generation:Edited 2 files, viewed a fileEdited 2 files, viewed a fileNow verify the file looks correct and copy to outputs:Ran 2 commandsRan 2 commandsAll changes confirmed. Copying to output:Ran a command, read a fileRan a command, read a fileHere's a full summary of every change made:
+Cosmetic
+
+Window title updated to v0.51
+
+Bug fix
+
+--strategy description corrected: adc removed, replaced with mcmc, mrnf, igs+ (legacy aliases: mnrf, lfs)
+
+Expanded file support
+
+--init description now lists USD formats (.usd, .usda, .usdc, .usdz)
+View file browser filetypes now includes a "USD files" entry covering all four USD variants
+
+New boolean flags (row 7 in Special Modes)
+
+--use-error-map — weight MRNF refine signal by per-pixel SSIM error map
+--use-edge-map — weight MRNF refine signal by Sobel edge map
+--ppisp-freeze — freeze PPISP learning
+--debug-python — start debugpy listener
+
+New parametered options
+
+--ppisp-sidecar added to the Rendering Options tab
+--debug-python-port (default 5678) added to the Logging & Masking tab
+
+Save/load config JSON
+
+All four new boolean vars are persisted and restored correctly
+
+get_all_option_names() and get_option_name_by_index()
+
+Both updated to match the expanded option list so indices stay in sync
