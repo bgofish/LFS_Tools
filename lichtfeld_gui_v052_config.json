@@ -3,7 +3,7 @@
         "train": false,
         "no_interop": false,
         "executable_path": "C:/ProgramPortable/LSF-NB/bin/LichtFeld-Studio.exe",
-        "master_folder_path": "B:/[LFS]/Atlux/Scan_CHAIr_2026.04.15_14.53.42/CHAIr_2026.04.15_14.53.42_FinalImageAtlux_Model_Colmap",
+        "master_folder_path": "B:/[LFS]/",
         "base_output_name": "",
         "use_frame_id": true,
         "expert_mode": false,
