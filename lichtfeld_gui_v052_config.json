@@ -2,8 +2,8 @@
     "general": {
         "train": false,
         "no_interop": false,
-        "executable_path": "C:/ProgramPortable/LSF-NB/bin/LichtFeld-Studio.exe",
-        "master_folder_path": "B:/[LFS]/",
+        "executable_path": "U:/LFS/LichtFeld-Studio/build/LichtFeld-Studio.exe",
+        "master_folder_path": "B:/[LFS]",
         "base_output_name": "",
         "use_frame_id": true,
         "expert_mode": false,
@@ -82,7 +82,7 @@
             "enabled": true
         },
         "--output-path": {
-            "value": "./output",
+            "value": "",
             "enabled": true
         },
         "--output-name": {
@@ -102,15 +102,15 @@
             "enabled": false
         },
         "--resize_factor": {
-            "value": "2",
+            "value": "auto",
             "enabled": false
         },
         "--max-width": {
-            "value": "1920",
+            "value": "3840",
             "enabled": false
         },
         "--mask-mode": {
-            "value": "alpha_consistent",
+            "value": "none",
             "enabled": false
         },
         "--sparsify-steps": {
@@ -126,7 +126,7 @@
             "enabled": false
         },
         "--tile-mode": {
-            "value": "4",
+            "value": "1",
             "enabled": false
         },
         "--ppisp-sidecar": {

@@ -13,7 +13,7 @@ class LichtFeldStudioDialog:
     def __init__(self, root):
         self.root = root
         self.root.title("LichtFeld Studio CLI Batch File Generator v0.5.2 - 3D Gaussian Splatting")
-        self.root.geometry("975x1100")
+        self.root.geometry("985x1100")
         
         # Variables to store all options
         self.master_folder_path = tk.StringVar(value="U:/CLI")
@@ -382,9 +382,9 @@ class LichtFeldStudioDialog:
                         "Path to training data",
                         browse_cmd=lambda: self._browse_folder_into(v)); r += 1
 
-        v, sv = self._new_var("./output", True)
+        v, sv = self._new_var("./output", False)
         self._row_entry(parent, r, "--output-path", v, sv,
-                        "Path to output",
+                        "Path to output - (Currently Not overriding - Dont Change !)",
                         browse_cmd=lambda: self._browse_folder_into(v))
         # Frame-ID helpers inline
         fid_frame = ttk.Frame(parent)
