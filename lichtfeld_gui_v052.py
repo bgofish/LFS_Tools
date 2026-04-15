@@ -12,8 +12,8 @@ from pathlib import Path
 class LichtFeldStudioDialog:
     def __init__(self, root):
         self.root = root
-        self.root.title("LichtFeld Studio CLI Batch File Generator v0.51 - 3D Gaussian Splatting")
-        self.root.geometry("985x1100")
+        self.root.title("LichtFeld Studio CLI Batch File Generator v0.5.2 - 3D Gaussian Splatting")
+        self.root.geometry("975x1100")
         
         # Variables to store all options
         self.master_folder_path = tk.StringVar(value="U:/CLI")
