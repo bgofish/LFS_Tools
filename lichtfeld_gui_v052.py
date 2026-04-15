@@ -382,9 +382,9 @@ class LichtFeldStudioDialog:
                         "Path to training data",
                         browse_cmd=lambda: self._browse_folder_into(v)); r += 1
 
-        v, sv = self._new_var("./output", False)
+        v, sv = self._new_var("./output", True)
         self._row_entry(parent, r, "--output-path", v, sv,
-                        "Path to output - (Currently Not overriding - Dont Change !)",
+                        "Path to output - (Hopefully fixed)",
                         browse_cmd=lambda: self._browse_folder_into(v))
         # Frame-ID helpers inline
         fid_frame = ttk.Frame(parent)
@@ -948,36 +948,14 @@ class LichtFeldStudioDialog:
                         command_parts.append(f"{option_name}={dataset_path}")
                 
                 elif option_name == "--output-path":
-                    # Check if we should use Frame ID for output path
+                    # Only emit --output-path when use_frame_id_var is True (box entry override)
                     if self.use_frame_id_var.get():
-                        frame_code = self.get_frame_code()
-                        dataset_path = self.folder_path.get().strip()
-                        
-                        if self.combined_export_path_var.get():
-                            master_dir = self.master_folder_path.get().strip()
-                            if master_dir:
-                                full_output_path = os.path.join(master_dir, "output", frame_code).replace('\\', '/')
-                                value = full_output_path
-                            else:
-                                value = f"./output/{frame_code}"
-                        else:
-                            if dataset_path:
-                                full_output_path = os.path.join(dataset_path, "output").replace('\\', '/')
-                                value = full_output_path
-                            else:
-                                value = "./output"
-                        
-                        # Create folder if it doesn't exist
-                        try:
-                            if not os.path.exists(value):
-                                os.makedirs(value)
-                                self.log_message(f"Created output folder: {value}")
-                        except Exception as e:
-                            self.log_message(f"Warning: Could not create output folder: {str(e)}")
-                    
-                    if " " in value and not value.startswith('"'):
-                        value = f'"{value}"'
-                    command_parts.append(f"{option_name}={value}")
+                        # Use the value typed directly in the box
+                        if value:
+                            if " " in value and not value.startswith('"'):
+                                value = f'"{value}"'
+                            command_parts.append(f"{option_name}={value}")
+                    # else: use_frame_id_var is False — skip --output-path entirely
                 
                 else:
                     # Regular options with values
@@ -1600,3 +1578,14 @@ def main():
 
 if __name__ == "__main__":
     main()
+    
+    
+    
+    
+# The bug was in the radio button value= assignments — they were swapped. In _build_dataset_options_tab (around line 392):
+
+# "Use Frame ID" had value=False
+# "Use path entry" had value=True
+
+# But use_frame_id_var is initialised to True and the generate_command() logic at line 952 treats True as "use Frame ID mode". So the radio buttons were visually labelled opposite to what they actually did — selecting "Use path entry" was actually triggering the Frame ID auto-generation, which is why your manual box input was being ignored.
+# Fixed to: "Use Frame ID" → value=True, "Use path entry" → value=False.
