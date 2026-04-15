@@ -1,0 +1,165 @@
+{
+    "general": {
+        "train": false,
+        "no_interop": false,
+        "executable_path": "C:/ProgramPortable/LSF-NB/bin/LichtFeld-Studio.exe",
+        "master_folder_path": "B:/[LFS]/Atlux/Scan_CHAIr_2026.04.15_14.53.42/CHAIr_2026.04.15_14.53.42_FinalImageAtlux_Model_Colmap",
+        "base_output_name": "",
+        "use_frame_id": true,
+        "expert_mode": false,
+        "config_path": "",
+        "view_path": "",
+        "view_mode": false,
+        "resume_checkpoint": "",
+        "batch_mode": false,
+        "start_frame": "001",
+        "end_frame": "010",
+        "nth_frame": "1",
+        "eval": false,
+        "headless": true,
+        "enable_mip": false,
+        "bilateral_grid": false,
+        "save_eval_images": false,
+        "save_depth": false,
+        "random": false,
+        "gut": false,
+        "enable_sparsity": false,
+        "bg_modulation": false,
+        "ppisp": false,
+        "ppisp_controller": false,
+        "invert_masks": false,
+        "no_alpha_as_mask": false,
+        "no_cpu_cache": false,
+        "no_fs_cache": false,
+        "use_error_map": false,
+        "use_edge_map": false,
+        "ppisp_freeze": false,
+        "debug_python": false
+    },
+    "options": {
+        "--iter": {
+            "value": "30000",
+            "enabled": true
+        },
+        "--strategy": {
+            "value": "",
+            "enabled": false
+        },
+        "--sh-degree": {
+            "value": "3",
+            "enabled": false
+        },
+        "--sh-degree-interval": {
+            "value": "",
+            "enabled": false
+        },
+        "--max-cap": {
+            "value": "",
+            "enabled": false
+        },
+        "--min-opacity": {
+            "value": "",
+            "enabled": false
+        },
+        "--steps-scaler": {
+            "value": "",
+            "enabled": false
+        },
+        "--init": {
+            "value": "",
+            "enabled": false
+        },
+        "--init-num-pts": {
+            "value": "",
+            "enabled": false
+        },
+        "--init-extent": {
+            "value": "",
+            "enabled": false
+        },
+        "--data-path": {
+            "value": "",
+            "enabled": true
+        },
+        "--output-path": {
+            "value": "./output",
+            "enabled": true
+        },
+        "--output-name": {
+            "value": "",
+            "enabled": false
+        },
+        "--import-cameras": {
+            "value": "",
+            "enabled": false
+        },
+        "--images": {
+            "value": "images",
+            "enabled": false
+        },
+        "--test-every": {
+            "value": "",
+            "enabled": false
+        },
+        "--resize_factor": {
+            "value": "2",
+            "enabled": false
+        },
+        "--max-width": {
+            "value": "1920",
+            "enabled": false
+        },
+        "--mask-mode": {
+            "value": "alpha_consistent",
+            "enabled": false
+        },
+        "--sparsify-steps": {
+            "value": "15000",
+            "enabled": false
+        },
+        "--init-rho": {
+            "value": "0.0005",
+            "enabled": false
+        },
+        "--prune-ratio": {
+            "value": "0.6",
+            "enabled": false
+        },
+        "--tile-mode": {
+            "value": "4",
+            "enabled": false
+        },
+        "--ppisp-sidecar": {
+            "value": "",
+            "enabled": false
+        },
+        "--timelapse-images": {
+            "value": "",
+            "enabled": false
+        },
+        "--timelapse-every": {
+            "value": "50",
+            "enabled": false
+        },
+        "--log-level": {
+            "value": "info",
+            "enabled": false
+        },
+        "--log-file": {
+            "value": "",
+            "enabled": false
+        },
+        "--log-filter": {
+            "value": "",
+            "enabled": false
+        },
+        "--python-script": {
+            "value": "",
+            "enabled": false
+        },
+        "--debug-python-port": {
+            "value": "5678",
+            "enabled": false
+        }
+    }
+}
