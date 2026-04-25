@@ -148,7 +148,7 @@ class ColmapCropGUI(tk.Tk):
         "►  Right":   (  0, -90),
         "▲  Front":   (  0, 180),
         "▼  Back":    (  0,   0),
-        "☼  Free":    ( 20, -45),  # +Y up the screen
+        "~~ Free":    ( 20, -45),  # +Y up the screen
     }
 
     def __init__(self):
@@ -169,8 +169,9 @@ class ColmapCropGUI(tk.Tk):
         self._graph_zoom = 1.0        # 1.0 = default size
 
         # Y-axis orientation: True = +Y up the screen, False = -Y up
+        # self._y_up = tk.BooleanVar(value=True)
         self._y_up = tk.BooleanVar(value=False)
-
+        
         # ── UI colour palette ──────────────────────────────────
         # Each entry: (label, attribute_name, current_value)
         # attribute_name is the key used in _apply_colour()
@@ -355,7 +356,7 @@ class ColmapCropGUI(tk.Tk):
 
         self._section_hdr(left, "VIEW")
 
-        self._view_var = tk.StringVar(value="⟳  Free")
+        self._view_var = tk.StringVar(value="~~ Free")
         for label in self._VIEWS:
             tk.Radiobutton(left, text=label,
                            variable=self._view_var, value=label,
@@ -387,7 +388,7 @@ class ColmapCropGUI(tk.Tk):
         y_row.pack(fill=tk.X)
 
         self._btn_yup = tk.Button(
-            y_row, text="-Y  ↑",
+            y_row, text="+Y  ↑",
             command=lambda: self._set_y_orientation(True),
             font=("Courier New", 8, "bold"),
             bg="#e94560", fg="white",          # active style (default)
@@ -396,7 +397,7 @@ class ColmapCropGUI(tk.Tk):
         self._btn_yup.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 2))
 
         self._btn_ydown = tk.Button(
-            y_row, text="+Y  ↑",
+            y_row, text="−Y  ↑",
             command=lambda: self._set_y_orientation(False),
             font=("Courier New", 8),
             bg="#0f3460", fg="#8892a4",        # inactive style
@@ -414,7 +415,7 @@ class ColmapCropGUI(tk.Tk):
         self._section_hdr(right, "CLIP / CROP")
 
         self._clip_vars = {}
-        axes_cfg = [("X", "#e94560"), ("Y", "#00b4d8"), ("Z", "#90e0ef")]
+        axes_cfg = [("X", "#ef8677"), ("Y", "#a0e77d"), ("Z", "#82b6d9")]
 
         for axis, color in axes_cfg:
             tk.Label(right, text=f"── {axis} ──",
@@ -721,9 +722,9 @@ class ColmapCropGUI(tk.Tk):
         ax = self._ax
         ax.set_facecolor("#0d0d1a")
         ax.tick_params(colors="#556677", labelsize=7)
-        ax.xaxis.label.set_color("#e94560")
-        ax.yaxis.label.set_color("#00b4d8")
-        ax.zaxis.label.set_color("#90e0ef")
+        ax.xaxis.label.set_color("#ef8677")
+        ax.yaxis.label.set_color("#a0e77d")
+        ax.zaxis.label.set_color("#82b6d9")
         ax.set_xlabel("X  (+left)",  labelpad=6)
         y_label = "Y  (+up)" if self._y_up.get() else "−Y  (+up)"
         ax.set_ylabel(y_label, labelpad=6)
@@ -768,14 +769,14 @@ class ColmapCropGUI(tk.Tk):
         self._canvas.draw()
 
     def _reset_view(self):
-        self._view_var.set("⟳  Free")
-        elev, azim = self._VIEWS["⟳  Free"]
+        self._view_var.set("~~ Free")
+        elev, azim = self._VIEWS["~~ Free"]
         self._view_init_with_orientation(elev, azim)
         self._canvas.draw()
 
     def _on_mouse_release(self, event):
         if event.button == 1:
-            self._view_var.set("⟳  Free")
+            self._view_var.set("~~ Free")
 
     # ──────────────────────────────────────────────────────────
     #  Clip helpers
@@ -864,6 +865,18 @@ class ColmapCropGUI(tk.Tk):
                   relief=tk.FLAT, padx=6, pady=2, cursor="hand2"
                   ).pack(side=tk.LEFT, padx=8)
 
+        # Scale radio buttons — Linear / Log
+        scale_var = tk.StringVar(value="linear")
+        tk.Label(ctrl, text="  Scale:", font=("Courier New", 9),
+                 fg="#8892a4", bg="#16213e").pack(side=tk.LEFT, padx=(8, 4))
+        for scale_name in ("linear", "symlog"):
+            tk.Radiobutton(ctrl, text=scale_name, variable=scale_var, value=scale_name,
+                           font=("Courier New", 10, "bold"),
+                           fg="#e94560", bg="#16213e", selectcolor="#0f3460",
+                           activebackground="#16213e",
+                           command=lambda: _draw_hist()
+                           ).pack(side=tk.LEFT, padx=4)
+
         # Instructions
         tk.Label(ctrl,
                  text="Left-click = set min  |  Right-click = set max  (applies to main clip panel)",
@@ -891,9 +904,35 @@ class ColmapCropGUI(tk.Tk):
             a = axis_var.get()
             col = {"X": 0, "Y": 1, "Z": 2}[a]
             data = self._xyz[:, col]
-            color = {"X": "#e94560", "Y": "#00b4d8", "Z": "#90e0ef"}[a]
+            color = {"X": "#ef8677", "Y": "#a0e77d", "Z": "#82b6d9"}[a]
 
-            ax.hist(data, bins=bins_var.get(), color=color, alpha=0.7, edgecolor="none")
+            n_bins = bins_var.get()
+
+            if scale_var.get() == "symlog":
+                # linthresh = 1% of the data range — keeps zero/near-zero linear
+                linthresh = max(float(np.percentile(np.abs(data[data != 0]), 1)), 1e-6) if np.any(data != 0) else 1.0
+
+                # Build symlog-spaced bin edges so bars are even across the scale
+                dmin, dmax = float(data.min()), float(data.max())
+                def _symlog_space(lo, hi, n, lt):
+                    """Generate n evenly-spaced points in symlog space between lo and hi."""
+                    import numpy as np
+                    def to_sym(v):
+                        return np.sign(v) * np.log1p(np.abs(v) / lt)
+                    def from_sym(s):
+                        return np.sign(s) * lt * (np.expm1(np.abs(s)))
+                    return from_sym(np.linspace(to_sym(lo), to_sym(hi), n))
+
+                bins = _symlog_space(dmin, dmax, n_bins + 1, linthresh)
+                ax.hist(data, bins=bins, color=color, alpha=0.7, edgecolor="none")
+                ax.set_xscale("symlog", linthresh=linthresh)
+                xlabel = f"{a}  (symlog)"
+            else:
+                ax.hist(data, bins=n_bins, color=color, alpha=0.7, edgecolor="none")
+                ax.set_xscale("linear")
+                xlabel = a
+            ax.set_ylabel("count", color="#556677", fontsize=8)
+            ax.set_xlabel(xlabel, color="#556677", fontsize=8)
 
             # Draw existing clip lines
             lo_key = f"{a.lower()}min"
@@ -909,7 +948,6 @@ class ColmapCropGUI(tk.Tk):
 
             ax.set_title(f"{a} distribution  ({len(data):,} pts)",
                          color="#8892a4", fontsize=9, fontfamily="Courier New")
-            ax.set_ylabel("count", color="#556677", fontsize=8)
             ax.grid(True, color="#1e3a5f", linewidth=0.4, linestyle="--")
             canvas.draw()
 
