@@ -1,4 +1,4 @@
-# "LichtFeld Studio | COLMAP Point Editor v0.1.0"
+# "LichtFeld Studio | COLMAP Point Editor v0.1.1"
 #================================================
 import sys, os, struct, json, subprocess
 import numpy as np
@@ -78,7 +78,7 @@ class COLMAPProject:
 class COLMAPExplorer(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("LichtFeld Studio | COLMAP Point Editor v0.1.0")
+        self.setWindowTitle("LichtFeld Studio | COLMAP Point Editor v0.1.1")
         self.resize(1750, 1050); self.proj, self.cloud_poly = None, None
         self.bounds = [0.0]*6; self.current_crop = [0.0]*6; self.bins = None
         self.picked_pts, self.pick_mode = [], None
@@ -539,7 +539,8 @@ class COLMAPExplorer(QMainWindow):
     def reset_crop(self):
         if self.cloud_poly: self.current_crop = [float(x) for x in self.bounds]; self.sync_crop_ui()
     def apply_view_preset(self, idx):
-        angles = [(0,0,-200),(0,0,200),(-200,0,0),(200,0,0),(0,200,0),(-200,200,-200),(200,200,-200),(-200,200,200),(200,200,200)]
+        #angles = [(0,0,-200),(0,0,200),(-200,0,0),(200,0,0),(0,200,0),(-200,200,-200),(200,200,-200),(-200,200,200),(200,200,200)]
+        angles = [(-200,200,-200), (0,0,-200),(200,200,-200), (-200,0,0), (0,200,0),(200,0,0), 	(-200,200,200), (0,0,200),  (200,200,200)]        
         self.plotter.camera_position = [angles[idx], (0,0,0), (0,1,0)]; self.plotter.reset_camera()
     def closeEvent(self, event): self.plotter.close(); self.hist_plotter.close(); event.accept()
 
