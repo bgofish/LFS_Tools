@@ -1,4 +1,4 @@
-# "LichtFeld Studio | COLMAP Point Editor v0.1.1"
+# "LichtFeld Studio | COLMAP Point Editor v0.1.2"
 #================================================
 import sys, os, struct, json, subprocess
 import numpy as np
@@ -78,7 +78,7 @@ class COLMAPProject:
 class COLMAPExplorer(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("LichtFeld Studio | COLMAP Point Editor v0.1.1")
+        self.setWindowTitle("LichtFeld Studio | COLMAP Point Editor v0.1.2")
         self.resize(1750, 1050); self.proj, self.cloud_poly = None, None
         self.bounds = [0.0]*6; self.current_crop = [0.0]*6; self.bins = None
         self.picked_pts, self.pick_mode = [], None
