@@ -1,14 +1,12 @@
-# self.setWindowTitle("LichtFeld Studio | COLMAP Point Editor v0.0.2")
-#================================================================
-import sys
-import os
-import struct
+# "LichtFeld Studio | COLMAP Point Editor v0.1.0"
+#================================================
+import sys, os, struct, json, subprocess
 import numpy as np
 import pyvista as pv
 from pyvistaqt import QtInteractor
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QVBoxLayout, QHBoxLayout,
                              QPushButton, QWidget, QFileDialog, QSlider, QLabel, 
-                             QComboBox, QGroupBox, QDoubleSpinBox, QRadioButton, QCheckBox, QGridLayout)
+                             QComboBox, QGroupBox, QDoubleSpinBox, QRadioButton, QGridLayout)
 from PyQt5.QtCore import Qt
 from scipy.spatial.transform import Rotation as Rot
 import vtk
@@ -28,26 +26,24 @@ def rotmat2qvec(R):
     return np.array([q[3], q[0], q[1], q[2]]) # w, x, y, z
 
 class COLMAPProject:
-    def __init__(self): self.cameras = {}; self.images = {}; self.points3D = {}
+    def __init__(self): self.cameras, self.images, self.points3D = {}, {}, {}
     def load(self, folder):
-        def find_file(base_name):
-            for ext in ['.bin', '.txt']:
-                for name in [base_name, base_name.lower(), base_name.upper()]:
-                    p = os.path.join(folder, name + ext)
-                    if os.path.exists(p): return p, ext.lower()
-            return None, None
-        
-        p_path, _ = find_file("points3D")
-        if not p_path: raise FileNotFoundError(f"Missing points3D in {folder}")
-        with open(p_path, "rb") as f:
+        is_bin = os.path.exists(os.path.join(folder, "points3D.bin"))
+        if is_bin: self._load_bin(folder)
+        else: self._load_txt(folder)
+
+    def _load_bin(self, folder):
+        with open(os.path.join(folder, "points3D.bin"), "rb") as f:
             num = struct.unpack("<Q", f.read(8))[0]
             for _ in range(num):
-                d = struct.unpack("<QdddBBB d", f.read(43))
+                # 43 byte header: Q(8) + ddd(24) + BBB(3) + d(8)
+                d = struct.unpack("<QdddBBBd", f.read(43))
                 t_len = struct.unpack("<Q", f.read(8))[0]
-                self.points3D[d[0]] = {'xyz': np.array(d[1:4]), 'rgb': np.array(d[4:7]), 'tracks': f.read(t_len * 8)}
+                tracks = f.read(t_len * 8)
+                self.points3D[d[0]] = {'xyz': np.array(d[1:4]), 'rgb': np.array(d[4:7]), 'err': d[7], 'tracks': tracks}
         
-        i_path, _ = find_file("images")
-        if i_path:
+        i_path = os.path.join(folder, "images.bin")
+        if os.path.exists(i_path):
             with open(i_path, "rb") as f:
                 num = struct.unpack("<Q", f.read(8))[0]
                 for _ in range(num):
@@ -59,241 +55,493 @@ class COLMAPProject:
                         name += char.decode("utf-8")
                     num_p2d = struct.unpack("<Q", f.read(8))[0]
                     self.images[h[0]] = {'qvec': np.array(h[1:5]), 'tvec': np.array(h[5:8]), 'cam_id': h[8], 'name': name, 'p2d': f.read(num_p2d * 24)}
-        
-        c_path, _ = find_file("cameras")
-        if c_path:
+
+        c_path = os.path.join(folder, "cameras.bin")
+        if os.path.exists(c_path):
             with open(c_path, "rb") as f:
                 num = struct.unpack("<Q", f.read(8))[0]
                 for _ in range(num):
-                    cid = struct.unpack("<I", f.read(4))[0]
-                    model = struct.unpack("<i", f.read(4))[0]
-                    hw = struct.unpack("<QQ", f.read(16))
-                    params = f.read(32) 
-                    self.cameras[cid] = {'model': model, 'hw': hw, 'params': params}
+                    cid, model, w, h = struct.unpack("<IiQQ", f.read(24))
+                    p_num = {0:3, 1:4, 2:4, 3:5, 4:8, 5:8, 6:12}.get(model, 4)
+                    params = struct.unpack(f"<{p_num}d", f.read(p_num * 8))
+                    self.cameras[cid] = {'model': model, 'hw': (w,h), 'params': params}
+
+    def _load_txt(self, folder):
+        p_path = os.path.join(folder, "points3D.txt")
+        if os.path.exists(p_path):
+            with open(p_path, "r") as f:
+                for line in f:
+                    if line.startswith("#") or not line.strip(): continue
+                    p = line.split()
+                    self.points3D[int(p[0])] = {'xyz': np.array(p[1:4], float), 'rgb': np.array(p[4:7], int), 'err': float(p[7]), 'tracks': p[8:]}
 
 class COLMAPExplorer(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("LichtFeld Studio | COLMAP Point Editor v0.0.2")
-        self.resize(1750, 1050)
-        self.proj, self.cloud_poly = None, None
-        self.bounds = [0.0]*6; self.current_crop = [-50000.0, 50000.0]*3
-        self.picked_points, self.pick_mode = [], None
+        self.setWindowTitle("LichtFeld Studio | COLMAP Point Editor v0.1.0")
+        self.resize(1750, 1050); self.proj, self.cloud_poly = None, None
+        self.bounds = [0.0]*6; self.current_crop = [0.0]*6; self.bins = None
+        self.picked_pts, self.pick_mode = [], None
+        self.settings_file = os.path.join(os.path.dirname(__file__), "settings.json")
 
         central = QWidget(); self.setCentralWidget(central)
-        main_layout = QHBoxLayout(central)
+        main_layout = QHBoxLayout(central); sidebar = QVBoxLayout()
 
-        # --- Sidebar ---
-        sidebar = QVBoxLayout()
-        p_grp = QGroupBox("Project"); p_v = QVBoxLayout()
+        # IO & SYSTEM
+        set_grp = QGroupBox("System"); h_set = QHBoxLayout()
+        for t, f in [("Read", self.load_settings), ("Write", self.save_settings), ("N++", self.open_in_npp)]:
+            btn = QPushButton(t); btn.clicked.connect(f); h_set.addWidget(btn)
+        p_v = QVBoxLayout(); p_v.addLayout(h_set)
         btn_load = QPushButton("📂 Import Project"); btn_load.clicked.connect(self.open_file)
         self.btn_bake = QPushButton("✅ SRT Baked"); self.btn_bake.clicked.connect(self.bake_srt)
-        btn_export = QPushButton("💾 [Export COLMAP]"); btn_export.clicked.connect(self.export_project)
-        p_v.addWidget(btn_load); p_v.addWidget(self.btn_bake); p_v.addWidget(btn_export); p_grp.setLayout(p_v); sidebar.addWidget(p_grp)
+        export_row = QHBoxLayout()
+        btn_export = QPushButton("💾 Export COLMAP"); btn_export.clicked.connect(self.export_project)
+        self.combo_export_fmt = QComboBox(); self.combo_export_fmt.addItems(["BIN", "TXT"]); self.combo_export_fmt.setFixedWidth(55)
+        export_row.addWidget(btn_export); export_row.addWidget(self.combo_export_fmt)
+        p_v.addWidget(btn_load); p_v.addWidget(self.btn_bake); p_v.addLayout(export_row); set_grp.setLayout(p_v); sidebar.addWidget(set_grp)
 
-        v_grp = QGroupBox("View Control"); v_v = QVBoxLayout(); grid = QGridLayout()
+        # VIEW & ALIGN
+        v_grp = QGroupBox("View & Alignment"); v_v = QVBoxLayout(); grid = QGridLayout()
         for i in range(9):
-            btn = QPushButton(f"V0{i+1}"); btn.clicked.connect(lambda checked, idx=i: self.apply_view_preset(idx))
-            grid.addWidget(btn, i//3, i%3)
+            btn = QPushButton(f"V0{i+1}"); btn.clicked.connect(lambda c, idx=i: self.apply_view_preset(idx)); grid.addWidget(btn, i//3, i%3)
         v_v.addLayout(grid)
-        v_v.addWidget(QLabel("Camera FOV:"))
         self.spin_fov = QDoubleSpinBox(); self.spin_fov.setRange(10, 120); self.spin_fov.setValue(45)
-        self.spin_fov.valueChanged.connect(self.update_fov); v_v.addWidget(self.spin_fov); v_grp.setLayout(v_v); sidebar.addWidget(v_grp)
+        self.spin_fov.valueChanged.connect(self.update_preview)
+        v_v.addWidget(QLabel("FOV:")); v_v.addWidget(self.spin_fov)
+        
+        self.pick_btn_map = {}
+        for t, m in [("Floor (3Pt)", 'plane'), ("Y-Align (2Pt)", 'align'), ("XYZ Origin", 'xyz_origin'), ("XZ Origin", 'xz_origin')]:
+            btn = QPushButton(t); btn.setCheckable(True); btn.clicked.connect(lambda c, mode=m: self.start_pick(mode))
+            v_v.addWidget(btn); self.pick_btn_map[m] = btn
+        v_grp.setLayout(v_v); sidebar.addWidget(v_grp)
 
-        pick_grp = QGroupBox("Alignment Tools"); pick_v = QVBoxLayout(); self.pick_btn_map = {}
-        for text, mode in [("3Point Floor", 'plane'), ("ALIGN Y-Axis", 'align'), ("New XYZ Origin", 'xyz_origin'), ("New XZ Origin", 'xz_origin')]:
-            btn = QPushButton(text); btn.setCheckable(True); btn.clicked.connect(lambda checked, m=mode: self.start_pick(m))
-            pick_v.addWidget(btn); self.pick_btn_map[mode] = btn
-        pick_grp.setLayout(pick_v); sidebar.addWidget(pick_grp)
-
+        # SRT
         srt_grp = QGroupBox("Global SRT"); srt_v = QVBoxLayout(); self.srt_ctrl = {}
-        for l, s, rmin, rmax in [('Scale',1.0,0.01,20),('RotX',0.0,-180,180),('RotY',0.0,-180,180),('RotZ',0.0,-180,180),('TransX',0.0,-1000,1000),('TransY',0.0,-1000,1000),('TransZ',0.0,-1000,1000)]:
+        cfgs = [('Scale',1.0,0.01,20),('RotX',0.0,-180,180),('RotY',0.0,-180,180),('RotZ',0.0,-180,180),('TransX',0.0,-5000,5000),('TransY',0.0,-5000,5000),('TransZ',0.0,-5000,5000)]
+        for l, s, r1, r2 in cfgs:
             srt_v.addWidget(QLabel(f"<b>{l}</b>"))
-            h = QHBoxLayout(); sp = QDoubleSpinBox(); sp.setRange(rmin, rmax); sp.setValue(s); sp.setDecimals(3)
-            sl = CustomSlider(Qt.Horizontal, default=int(s*100) if l!='Scale' else 100); sl.setRange(int(rmin*100), int(rmax*100)); sl.setValue(int(s*100))
+            h = QHBoxLayout(); sp = QDoubleSpinBox(); sp.setRange(r1, r2); sp.setValue(s); sp.setDecimals(3)
+            sl = CustomSlider(Qt.Horizontal, default=int(s*100) if l!='Scale' else 0); sl.setRange(int(r1*100), int(r2*100)); sl.setValue(int(s*100))
             sp.valueChanged.connect(lambda v, s_obj=sl: s_obj.blockSignals(True) or s_obj.setValue(int(v*100)) or s_obj.blockSignals(False))
             sl.valueChanged.connect(lambda v, p_obj=sp: p_obj.blockSignals(True) or p_obj.setValue(v/100.0) or p_obj.blockSignals(False))
-            sp.valueChanged.connect(self.on_srt_change); sl.valueChanged.connect(self.on_srt_change)
-            h.addWidget(sp); h.addWidget(sl); srt_v.addLayout(h); self.srt_ctrl[l] = sp
+            sp.valueChanged.connect(self.on_srt_change)
+            sl.valueChanged.connect(self.on_srt_change); h.addWidget(sp); h.addWidget(sl); srt_v.addLayout(h); self.srt_ctrl[l] = sp
+        self.spin_step = QDoubleSpinBox(); self.spin_step.setRange(0.001, 1.0); self.spin_step.setValue(0.02)
+        self.spin_step.valueChanged.connect(self.update_step_sizes); srt_v.addWidget(QLabel("Step Size:")); srt_v.addWidget(self.spin_step); srt_grp.setLayout(srt_v); sidebar.addWidget(srt_grp)
 
-        self.spin_step = QDoubleSpinBox(); self.spin_step.setRange(0.001, 1.0); self.spin_step.setValue(0.02); self.spin_step.setDecimals(3)
-        self.spin_step.valueChanged.connect(self.update_step_sizes)
-        srt_v.addWidget(QLabel("Step Size:")); srt_v.addWidget(self.spin_step); srt_grp.setLayout(srt_v); sidebar.addWidget(srt_grp)
-
+        # VISUALS
         t_grp = QGroupBox("Visuals"); t_v = QVBoxLayout()
         self.btn_origin_vis = QPushButton("[Origin Axis]"); self.btn_origin_vis.setCheckable(True); self.btn_origin_vis.setChecked(True); self.btn_origin_vis.toggled.connect(self.update_preview); t_v.addWidget(self.btn_origin_vis)
-        self.sld_size = QSlider(Qt.Horizontal); self.sld_size.setRange(1, 15); self.sld_size.setValue(3); self.sld_size.valueChanged.connect(self.update_preview)
-        t_v.addWidget(QLabel("Point Size:")); t_v.addWidget(self.sld_size)
-        self.combo_color = QComboBox(); self.combo_color.addItems(["Source RGB", "Elevation (Y)", "Cyan Single"]); self.combo_color.currentIndexChanged.connect(self.update_preview); t_v.addWidget(self.combo_color)
+        self.sld_pts = QSlider(Qt.Horizontal); self.sld_pts.setRange(1, 15); self.sld_pts.setValue(3); self.sld_pts.valueChanged.connect(self.update_preview); t_v.addWidget(QLabel("Point Size:")); t_v.addWidget(self.sld_pts)
+        self.combo_color = QComboBox(); self.combo_color.addItems(["RGB", "Elevation", "Cyan"]); self.combo_color.currentIndexChanged.connect(self.update_preview); t_v.addWidget(self.combo_color)
         t_grp.setLayout(t_v); sidebar.addWidget(t_grp); sidebar.addStretch(); main_layout.addLayout(sidebar, 1)
 
-        # --- Main Viewport ---
-        content = QVBoxLayout()
-        self.plotter = QtInteractor(self); self.hist_plotter = QtInteractor(self); self.hist_plotter.setMaximumHeight(180)
+        # VIEWPORT & CROP
+        content = QVBoxLayout(); self.plotter = QtInteractor(self); self.hist_plotter = QtInteractor(self); self.hist_plotter.setMaximumHeight(160)
         content.addWidget(self.plotter.interactor, 6); content.addWidget(self.hist_plotter.interactor, 2)
-        
-        crop_grp = QGroupBox("Cropping Area"); crop_v = QVBoxLayout(); row_top = QHBoxLayout()
+        c_grp = QGroupBox("Cropping"); c_v = QVBoxLayout(); row = QHBoxLayout()
         self.axis_sel = QComboBox(); self.axis_sel.addItems(["X Axis", "Y Axis", "Z Axis"]); self.axis_sel.setCurrentIndex(1); self.axis_sel.currentIndexChanged.connect(self.sync_crop_ui)
-        btn99 = QPushButton("Auto99"); btn99.clicked.connect(lambda: self.auto_crop_stat(0.99))
-        btn95 = QPushButton("Auto95"); btn95.clicked.connect(lambda: self.auto_crop_stat(0.95))
-        self.rad_log = QRadioButton("Log Scale"); self.rad_log.toggled.connect(self.update_preview)
-        row_top.addWidget(QLabel("Axis:")); row_top.addWidget(self.axis_sel); row_top.addStretch(); row_top.addWidget(btn99); row_top.addWidget(btn95); row_top.addWidget(self.rad_log)
-        btn_res = QPushButton("Reset"); btn_res.clicked.connect(self.reset_crop); row_top.addWidget(btn_res); crop_v.addLayout(row_top)
-
+        btn99, btn95 = QPushButton("Auto99"), QPushButton("Auto95")
+        btn99.clicked.connect(lambda: self.auto_crop_stat(0.99)); btn95.clicked.connect(lambda: self.auto_crop_stat(0.95))
+        self.rad_log = QRadioButton("Log Mode"); self.rad_log.toggled.connect(self.update_preview)
+        row.addWidget(self.axis_sel); row.addStretch(); row.addWidget(btn99); row.addWidget(btn95); row.addWidget(self.rad_log)
+        btn_res = QPushButton("Reset Crop"); btn_res.clicked.connect(self.reset_crop); row.addWidget(btn_res); c_v.addLayout(row)
         self.crop_ui = {}
-        for l in ["Min", "Max"]:
-            row = QHBoxLayout(); sp = QDoubleSpinBox(); sp.setRange(-1e6, 1e6); sp.setDecimals(2)
-            sl = CustomSlider(Qt.Horizontal); sl.setRange(0, 1000); sp.valueChanged.connect(self.on_ui_change); sl.valueChanged.connect(self.on_slider_move)
-            row.addWidget(QLabel(f"{l}:")); row.addWidget(sp); row.addWidget(sl); crop_v.addLayout(row); self.crop_ui[l.lower()] = sp; self.crop_ui[f"{l.lower()}_sl"] = sl
-        crop_grp.setLayout(crop_v); content.addWidget(crop_grp); main_layout.addLayout(content, 4)
-
+        for l in ["min", "max"]:
+            r = QHBoxLayout(); sp = QDoubleSpinBox(); sp.setRange(-1e7, 1e7); sl = CustomSlider(Qt.Horizontal); sl.setRange(0, 1000)
+            sp.valueChanged.connect(self.update_preview); sl.valueChanged.connect(self.on_slider_move)
+            r.addWidget(QLabel(l.upper())); r.addWidget(sp); r.addWidget(sl); c_v.addLayout(r); self.crop_ui[l] = sp; self.crop_ui[f"{l}_sl"] = sl
+        c_grp.setLayout(c_v); content.addWidget(c_grp); main_layout.addLayout(content, 4)
         self.hist_plotter.iren.add_observer("LeftButtonPressEvent", lambda o,e: self.on_hist_click(o,e,"min"))
         self.hist_plotter.iren.add_observer("RightButtonPressEvent", lambda o,e: self.on_hist_click(o,e,"max"))
-        self.plotter.set_background("black"); self.update_step_sizes()
+        self.plotter.set_background("black"); self.set_bake_state(False)
 
-    def update_fov(self, val):
-        self.plotter.camera.view_angle = val; self.plotter.render()
+    def get_mat(self):
+        S, R = self.srt_ctrl['Scale'].value(), Rot.from_euler('xyz', [self.srt_ctrl['RotX'].value(), self.srt_ctrl['RotY'].value(), self.srt_ctrl['RotZ'].value()], degrees=True).as_matrix()
+        m = np.eye(4); m[:3,:3] = R * S; m[:3,3] = [self.srt_ctrl['TransX'].value(), self.srt_ctrl['TransY'].value(), self.srt_ctrl['TransZ'].value()]
+        return m
+
+    def get_colmap_srt(self):
+        """Return (S, R_c, T_c) — the SRT expressed in original COLMAP coordinate space."""
+        S = self.srt_ctrl['Scale'].value()
+        R_d = Rot.from_euler('xyz', [self.srt_ctrl['RotX'].value(),
+                                     self.srt_ctrl['RotY'].value(),
+                                     self.srt_ctrl['RotZ'].value()], degrees=True).as_matrix()
+        T_d = np.array([self.srt_ctrl['TransX'].value(),
+                        self.srt_ctrl['TransY'].value(),
+                        self.srt_ctrl['TransZ'].value()])
+        # Display space has Y negated: P_display = F @ P_colmap, F = diag(1,-1,1)
+        # A display-space rotation R_d corresponds to F @ R_d @ F in COLMAP space.
+        # Translation is purely additive in display space, so T_colmap = F @ T_d.
+        F = np.diag([1.0, -1.0, 1.0])
+        return S, F @ R_d @ F, F @ T_d
+        S, R = self.srt_ctrl['Scale'].value(), Rot.from_euler('xyz', [self.srt_ctrl['RotX'].value(), self.srt_ctrl['RotY'].value(), self.srt_ctrl['RotZ'].value()], degrees=True).as_matrix()
+        m = np.eye(4); m[:3,:3] = R * S; m[:3,3] = [self.srt_ctrl['TransX'].value(), self.srt_ctrl['TransY'].value(), self.srt_ctrl['TransZ'].value()]
+        return m
 
     def update_preview(self):
         if not self.cloud_poly: return
-        idx = self.axis_sel.currentIndex()
-        self.current_crop[2*idx], self.current_crop[2*idx+1] = self.crop_ui['min'].value(), self.crop_ui['max'].value()
-        
-        temp = self.cloud_poly.copy(); temp.transform(self.get_mat(), inplace=True)
-        c = self.current_crop
-        # FIXED: Explicit element-by-element masking to avoid broadcast errors
-        mask = (temp.points[:,0] >= c[0]) & (temp.points[:,0] <= c[1]) & \
-               (temp.points[:,1] >= c[2]) & (temp.points[:,1] <= c[3]) & \
-               (temp.points[:,2] >= c[4]) & (temp.points[:,2] <= c[5])
-        
+        self.plotter.camera.view_angle = self.spin_fov.value()
+        idx = self.axis_sel.currentIndex(); self.current_crop[2*idx], self.current_crop[2*idx+1] = self.crop_ui['min'].value(), self.crop_ui['max'].value()
+        temp = self.cloud_poly.copy().transform(self.get_mat()); c = self.current_crop
+        mask = (temp.points[:,0]>=c[0])&(temp.points[:,0]<=c[1])&(temp.points[:,1]>=c[2])&(temp.points[:,1]<=c[3])&(temp.points[:,2]>=c[4])&(temp.points[:,2]<=c[5])
         active = temp.extract_points(mask) if np.any(mask) else None
         if active:
             cm = self.combo_color.currentIndex()
-            if cm == 0: self.plotter.add_mesh(active, name="cloud", scalars="rgb", rgb=True, point_size=self.sld_size.value(), reset_camera=False)
-            elif cm == 1: self.plotter.add_mesh(active, name="cloud", scalars=active.points[:,1], cmap="viridis", point_size=self.sld_size.value(), reset_camera=False)
-            else: self.plotter.add_mesh(active, name="cloud", color="cyan", point_size=self.sld_size.value(), reset_camera=False)
+            if cm == 1: self.plotter.add_mesh(active, name="cloud", scalars=active.points[:,1], cmap="viridis", show_scalar_bar=False, reset_camera=False, point_size=self.sld_pts.value())
+            elif cm == 2: self.plotter.add_mesh(active, name="cloud", color="cyan", reset_camera=False, point_size=self.sld_pts.value())
+            else: self.plotter.add_mesh(active, name="cloud", scalars="rgb", rgb=True, reset_camera=False, point_size=self.sld_pts.value())
         else: self.plotter.remove_actor("cloud")
-        
         self.update_histogram(temp.points); self.toggle_origin(self.btn_origin_vis.isChecked()); self.plotter.render()
+
+    def update_histogram(self, pts):
+        self.hist_plotter.clear(); idx = self.axis_sel.currentIndex(); data = pts[:, idx]
+        if self.rad_log.isChecked(): data = np.sign(data) * np.log10(np.abs(data) + 1)
+        counts, self.bins = np.histogram(data, bins=100); chart = pv.Chart2D()
+        chart.bar(self.bins[:-1], counts, color=["#FF4444","#44FF44","#4444FF"][idx])
+        c_min, c_max = self.current_crop[2*idx], self.current_crop[2*idx+1]
+        if self.rad_log.isChecked(): 
+            c_min = np.sign(c_min)*np.log10(np.abs(c_min)+1); c_max = np.sign(c_max)*np.log10(np.abs(c_max)+1)
+        chart.line([c_min, c_min], [0, counts.max()], color="red",   width=2)
+        chart.line([c_max, c_max], [0, counts.max()], color="green", width=2)
+        self.hist_plotter.add_chart(chart); self.hist_plotter.render()
+
+    def save_settings(self):
+        d = {
+            "srt": {k: float(v.value()) for k, v in self.srt_ctrl.items()},
+            "fov": float(self.spin_fov.value()),
+            "crop": [float(x) for x in self.current_crop]
+        }
+        with open(self.settings_file, "w") as f: json.dump(d, f, indent=4)
+
+    def load_settings(self):
+        if not os.path.exists(self.settings_file): return
+        with open(self.settings_file, "r") as f: d = json.load(f)
+        for k, v in d["srt"].items(): self.srt_ctrl[k].setValue(v)
+        self.spin_fov.setValue(d.get("fov", 45)); self.current_crop = d.get("crop", [0.0]*6); self.sync_crop_ui()
+
+    def export_project(self):
+        f = QFileDialog.getExistingDirectory(self, "Export Folder")
+        if not (f and self.proj): return
+        use_bin = self.combo_export_fmt.currentText() == "BIN"
+        S, R_c, T_c = self.get_colmap_srt()
+
+        def _transform_image(img):
+            """Return (q_new, t_new) with correct COLMAP camera pose update."""
+            R_cw = qvec2rotmat(img['qvec'])
+            t_cw = np.array(img['tvec'])
+            C        = -R_cw.T @ t_cw          # camera centre in world space
+            C_new    = S * (R_c @ C) + T_c     # transform centre
+            R_cw_new = R_cw @ R_c.T            # new rotation
+            t_cw_new = -R_cw_new @ C_new       # new translation
+            return rotmat2qvec(R_cw_new), t_cw_new
+
+        def _point_xyz_new(p):
+            return S * (R_c @ np.array(p['xyz'])) + T_c
+
+        # Apply current crop bounds — crop is in display space (Y-flipped),
+        # so convert each point to display space before testing.
+        xmin, xmax, ymin, ymax, zmin, zmax = self.current_crop
+        def _in_crop(p):
+            x, y, z = p['xyz']           # COLMAP space
+            dx, dy, dz = x, -y, z       # display space (Y flipped)
+            return (xmin <= dx <= xmax and
+                    ymin <= dy <= ymax and
+                    zmin <= dz <= zmax)
+
+        cropped_points = {pid: p for pid, p in self.proj.points3D.items() if _in_crop(p)}
+        total_pts   = len(self.proj.points3D)
+        cropped_pts = len(cropped_points)
+        print(f"[export] Crop: {cropped_pts:,} / {total_pts:,} points")
+
+        def _track_str(tracks):
+            s = ""
+            if isinstance(tracks, bytes):
+                for j in range(len(tracks) // 8):
+                    iid2, pt2d = struct.unpack_from("<ii", tracks, j * 8)
+                    s += f" {iid2} {pt2d}"
+            elif isinstance(tracks, list):
+                s = " " + " ".join(str(t) for t in tracks)
+            return s
+
+        def _p2d_str(p2d):
+            if not isinstance(p2d, bytes) or len(p2d) < 24:
+                return ""
+            parts = []
+            for j in range(len(p2d) // 24):
+                x2, y2 = struct.unpack_from("<dd", p2d, j * 24)
+                p3id   = struct.unpack_from("<q",  p2d, j * 24 + 16)[0]
+                parts.append(f"{x2:.4f} {y2:.4f} {p3id}")
+            return " ".join(parts)
+
+        MODEL_NAMES = {0:"SIMPLE_PINHOLE", 1:"PINHOLE", 2:"SIMPLE_RADIAL", 3:"RADIAL",
+                       4:"OPENCV", 5:"OPENCV_FISHEYE", 6:"FULL_OPENCV"}
+
+        if use_bin:
+            # --- points3D.bin ---
+            with open(os.path.join(f, "points3D.bin"), "wb") as file:
+                file.write(struct.pack("<Q", len(cropped_points)))
+                for pid, p in cropped_points.items():
+                    xyz = _point_xyz_new(p)
+                    r, g, b = int(p['rgb'][0]), int(p['rgb'][1]), int(p['rgb'][2])
+                    file.write(struct.pack("<QdddBBBd", pid, *xyz, r, g, b, p['err']))
+                    tracks = p['tracks']
+                    if isinstance(tracks, bytes):
+                        file.write(struct.pack("<Q", len(tracks) // 8))
+                        file.write(tracks)
+                    else:
+                        file.write(struct.pack("<Q", 0))
+
+            # --- images.bin ---
+            with open(os.path.join(f, "images.bin"), "wb") as file:
+                file.write(struct.pack("<Q", len(self.proj.images)))
+                for iid, img in self.proj.images.items():
+                    q_new, t_new = _transform_image(img)
+                    file.write(struct.pack("<I",    iid))
+                    file.write(struct.pack("<dddd", *q_new))
+                    file.write(struct.pack("<ddd",  *t_new))
+                    file.write(struct.pack("<I",    img['cam_id']))
+                    file.write(img['name'].encode() + b"\x00")
+                    p2d = img['p2d']
+                    if isinstance(p2d, bytes):
+                        file.write(struct.pack("<Q", len(p2d) // 24))
+                        file.write(p2d)
+                    else:
+                        file.write(struct.pack("<Q", 0))
+
+            # --- cameras.bin ---
+            with open(os.path.join(f, "cameras.bin"), "wb") as file:
+                file.write(struct.pack("<Q", len(self.proj.cameras)))
+                for cid, cam in self.proj.cameras.items():
+                    file.write(struct.pack("<IiQQ", cid, cam['model'], *cam['hw']))
+                    file.write(struct.pack(f"<{len(cam['params'])}d", *cam['params']))
+
+        else:
+            # --- points3D.txt ---
+            with open(os.path.join(f, "points3D.txt"), "w") as file:
+                file.write("# 3D point list\n#   POINT3D_ID, X, Y, Z, R, G, B, ERROR, TRACK[]\n")
+                file.write(f"# Number of points: {len(cropped_points)}\n")
+                for pid, p in cropped_points.items():
+                    xyz = _point_xyz_new(p)
+                    r, g, b = int(p['rgb'][0]), int(p['rgb'][1]), int(p['rgb'][2])
+                    file.write(f"{pid} {xyz[0]:.6f} {xyz[1]:.6f} {xyz[2]:.6f} {r} {g} {b} {p['err']:.6f}{_track_str(p['tracks'])}\n")
+
+            # --- images.txt ---
+            with open(os.path.join(f, "images.txt"), "w") as file:
+                file.write("# Image list\n#   IMAGE_ID, QW,QX,QY,QZ, TX,TY,TZ, CAMERA_ID, NAME\n")
+                file.write("#   POINTS2D[] as (X, Y, POINT3D_ID)\n")
+                file.write(f"# Number of images: {len(self.proj.images)}\n")
+                for iid, img in self.proj.images.items():
+                    q_new, t_new = _transform_image(img)
+                    file.write(f"{iid} {q_new[0]:.9f} {q_new[1]:.9f} {q_new[2]:.9f} {q_new[3]:.9f} "
+                               f"{t_new[0]:.9f} {t_new[1]:.9f} {t_new[2]:.9f} {img['cam_id']} {img['name']}\n")
+                    file.write(_p2d_str(img['p2d']) + "\n")
+
+            # --- cameras.txt ---
+            with open(os.path.join(f, "cameras.txt"), "w") as file:
+                file.write("# Camera list with one line of data per camera:\n")
+                file.write("#   CAMERA_ID, MODEL, WIDTH, HEIGHT, PARAMS[]\n")
+                file.write(f"# Number of cameras: {len(self.proj.cameras)}\n")
+                for cid, cam in self.proj.cameras.items():
+                    model_name = MODEL_NAMES.get(cam['model'], f"UNKNOWN_{cam['model']}")
+                    params_str = " ".join(f"{p:.6f}" for p in cam['params'])
+                    file.write(f"{cid} {model_name} {cam['hw'][0]} {cam['hw'][1]} {params_str}\n")
+
+        fmt = "BIN" if use_bin else "TXT"
+        print(f"Exported {fmt} to {f}")
+        self._write_logfile(event="export", output_folder=f, export_fmt=fmt,
+                            points_exported=cropped_pts, points_total=total_pts)
+
+    def on_hist_click(self, o, e, mode):
+        if self.bins is None: return
+        x, _ = o.GetEventPosition(); pct = (x/self.hist_plotter.width() - 0.08)/0.84
+        val = self.bins[int(np.clip(pct, 0, 1) * (len(self.bins)-1))]
+        if self.rad_log.isChecked(): val = np.sign(val) * (10**np.abs(val) - 1)
+        self.crop_ui[mode].setValue(val)
+
+    def start_pick(self, m):
+        self.plotter.disable_picking()
+        for b in self.pick_btn_map.values(): b.setChecked(False)
+        self.pick_btn_map[m].setChecked(True); self.pick_mode = m; self.picked_pts = []
+        self.plotter.enable_point_picking(callback=self.pick_callback, show_message=True, color='yellow', point_size=12)
+
+    def pick_callback(self, pt):
+        self.picked_pts.append(np.array(pt))
+        if self.pick_mode == 'xyz_origin':
+            for i, k in enumerate(['TransX', 'TransY', 'TransZ']): self.srt_ctrl[k].setValue(self.srt_ctrl[k].value() - pt[i])
+            self.finish_pick()
+        elif self.pick_mode == 'xz_origin':
+            self.srt_ctrl['TransX'].setValue(self.srt_ctrl['TransX'].value() - pt[0])
+            self.srt_ctrl['TransZ'].setValue(self.srt_ctrl['TransZ'].value() - pt[2]); self.finish_pick()
+        elif self.pick_mode == 'align' and len(self.picked_pts) == 2:
+            p1, p2 = self.picked_pts; ang = np.degrees(np.arctan2(p2[0]-p1[0], p2[2]-p1[2]))
+            self.srt_ctrl['RotY'].setValue(self.srt_ctrl['RotY'].value() - ang); self.finish_pick()
+        elif self.pick_mode == 'plane' and len(self.picked_pts) == 3:
+            p1, p2, p3 = self.picked_pts
+            n = np.cross(p2 - p1, p3 - p1)
+            n_len = np.linalg.norm(n)
+            if n_len < 1e-9: self.finish_pick(); return
+            n /= n_len
+            # Ensure normal points upward (toward display +Y); flip if needed
+            if n[1] < 0: n = -n
+            # Compute rotation that maps n -> display +Y = [0,1,0]
+            target = np.array([0.0, 1.0, 0.0])
+            axis = np.cross(n, target)
+            axis_len = np.linalg.norm(axis)
+            if axis_len < 1e-9:
+                # Already aligned (or anti-aligned, handled above)
+                self.finish_pick(); return
+            axis /= axis_len
+            angle = np.arccos(np.clip(np.dot(n, target), -1, 1))
+            # Rodrigues -> rotation matrix
+            K = np.array([[0, -axis[2], axis[1]], [axis[2], 0, -axis[0]], [-axis[1], axis[0], 0]])
+            R = np.eye(3) + np.sin(angle)*K + (1 - np.cos(angle))*(K @ K)
+            # Extract Euler XYZ from R (matches scipy 'xyz' convention used in get_mat)
+            ry = np.degrees(np.arctan2( R[0, 2], np.sqrt(R[1,2]**2 + R[2,2]**2)))
+            rx = np.degrees(np.arctan2(-R[1, 2], R[2, 2]))
+            rz = np.degrees(np.arctan2(-R[0, 1], R[0, 0]))
+            self.srt_ctrl['RotX'].setValue(self.srt_ctrl['RotX'].value() + rx)
+            self.srt_ctrl['RotY'].setValue(self.srt_ctrl['RotY'].value() + ry)
+            self.srt_ctrl['RotZ'].setValue(self.srt_ctrl['RotZ'].value() + rz)
+            self.finish_pick()
+
+    def finish_pick(self):
+        self.plotter.disable_picking(); self.pick_mode = None
+        for b in self.pick_btn_map.values(): b.setChecked(False)
+        self.on_srt_change()
+
+    def open_file(self):
+        f = QFileDialog.getExistingDirectory(self, "Select Folder")
+        if not f: return
+        self.proj = COLMAPProject(); self.proj.load(f)
+        if not self.proj.points3D:
+            QMessageBox.warning(self, "Empty Project",
+                "No 3D points found in the selected folder.\n"
+                "Make sure it contains points3D.bin or points3D.txt.")
+            return
+        pts = np.vstack([v['xyz'] * [1, -1, 1] for v in self.proj.points3D.values()]).astype(np.float32)
+        rgbs = np.vstack([v['rgb'] for v in self.proj.points3D.values()]).astype(np.uint8)
+        self.cloud_poly = pv.PolyData(pts); self.cloud_poly.point_data["rgb"] = rgbs
+        self.bounds = [float(pts[:,0].min()), float(pts[:,0].max()), float(pts[:,1].min()), float(pts[:,1].max()), float(pts[:,2].min()), float(pts[:,2].max())]
+        self.reset_crop()
 
     def toggle_origin(self, show):
         self.plotter.remove_actor("origin")
         if show and self.cloud_poly:
-            b = self.cloud_poly.bounds
-            al = max(abs(b[1]-b[0]), abs(b[3]-b[2]), abs(b[5]-b[4])) * 0.3
-            pts = np.array([[0,0,0], [al,0,0], [0,al,0], [0,0,al]], dtype=np.float32)
-            lines = np.array([2,0,1, 2,0,2, 2,0,3])
-            mesh = pv.PolyData(pts, lines=lines); mesh.cell_data["colors"] = np.array([0, 1, 2])
-            self.plotter.add_mesh(mesh, name="origin", scalars="colors", cmap=["red","green","blue"], line_width=5, render_lines_as_tubes=True, show_scalar_bar=False)
+            b = np.array(self.cloud_poly.bounds); al = (b[1]-b[0]) * 0.3
+            pts = np.array([[0,0,0], [al,0,0], [0,al,0], [0,0,al]], float)
+            o = pv.PolyData(pts, lines=np.array([2,0,1, 2,0,2, 2,0,3]))
+            o.cell_data["colors"] = np.array([[255,0,0],[0,255,0],[0,0,255]], dtype=np.uint8)
+            self.plotter.add_mesh(o, name="origin", scalars="colors", rgb=True, line_width=5)
 
-    def open_file(self):
-        f = QFileDialog.getExistingDirectory(self, "Select COLMAP Folder")
-        if f:
-            self.proj = COLMAPProject(); self.proj.load(f)
-            pts = np.array([p['xyz'] * [1, -1, 1] for p in self.proj.points3D.values()], dtype=np.float32)
-            self.cloud_poly = pv.PolyData(pts); self.cloud_poly.point_data["rgb"] = np.array([p['rgb'] for p in self.proj.points3D.values()])
-            self.bounds = [pts[:,0].min(), pts[:,0].max(), pts[:,1].min(), pts[:,1].max(), pts[:,2].min(), pts[:,2].max()]
-            self.current_crop = list(self.bounds); self.apply_view_preset(5); self.sync_crop_ui()
-
-    def export_project(self):
-        f = QFileDialog.getExistingDirectory(self, "Select Export Folder")
-        if not (f and self.proj): return
-        S = self.srt_ctrl['Scale'].value()
-        R_delta = Rot.from_euler('xyz', [self.srt_ctrl['RotX'].value(), self.srt_ctrl['RotY'].value(), self.srt_ctrl['RotZ'].value()], degrees=True).as_matrix()
-        T_delta = np.array([self.srt_ctrl['TransX'].value(), self.srt_ctrl['TransY'].value(), self.srt_ctrl['TransZ'].value()])
-        
-        final_mesh = self.cloud_poly.copy(); final_mesh.transform(self.get_mat(), inplace=True); pts = final_mesh.points * [1, -1, 1]
-        with open(os.path.join(f, "points3D.bin"), "wb") as file:
-            file.write(struct.pack("<Q", len(self.proj.points3D)))
-            for i, pid in enumerate(self.proj.points3D.keys()):
-                p = self.proj.points3D[pid]
-                file.write(struct.pack("<QdddBBB d", pid, *pts[i].tolist(), *p['rgb'].tolist(), 0.0))
-                file.write(struct.pack("<Q", len(p['tracks']) // 8) + p['tracks'])
-        with open(os.path.join(f, "images.bin"), "wb") as file:
-            file.write(struct.pack("<Q", len(self.proj.images)))
-            for iid, img in self.proj.images.items():
-                R_old = qvec2rotmat(img['qvec']); R_new = R_old @ R_delta.T; T_new = img['tvec'] - (R_new @ T_delta) / S
-                file.write(struct.pack("<I", iid) + struct.pack("<dddd", *rotmat2qvec(R_new).tolist()) + 
-                           struct.pack("<ddd", *T_new.flatten().tolist()) + struct.pack("<I", img['cam_id']) + 
-                           img['name'].encode() + b"\x00" + struct.pack("<Q", len(img['p2d']) // 24) + img['p2d'])
-        with open(os.path.join(f, "cameras.bin"), "wb") as file:
-            file.write(struct.pack("<Q", len(self.proj.cameras)))
-            for cid, cam in self.proj.cameras.items():
-                file.write(struct.pack("<IiQQ", cid, cam['model'], *cam['hw']) + cam['params'])
-        print(f"Export Complete: {f}")
-
-    def pick_callback(self, pt):
-        if pt is None: return
-        self.picked_points.append(pt)
-        if self.pick_mode in ['xyz_origin', 'xz_origin']:
-            self.srt_ctrl['TransX'].setValue(self.srt_ctrl['TransX'].value() - float(pt[0]))
-            self.srt_ctrl['TransZ'].setValue(self.srt_ctrl['TransZ'].value() - float(pt[2]))
-            if self.pick_mode == 'xyz_origin': self.srt_ctrl['TransY'].setValue(self.srt_ctrl['TransY'].value() - float(pt[1]))
-            self.finish_pick()
-        elif self.pick_mode == 'align' and len(self.picked_points) == 2:
-            p1, p2 = self.picked_points; ang = np.degrees(np.arctan2(p2[0]-p1[0], p2[2]-p1[2]))
-            self.srt_ctrl['RotY'].setValue(self.srt_ctrl['RotY'].value() - float(ang)); self.finish_pick()
-        elif self.pick_mode == 'plane' and len(self.picked_points) == 3:
-            p1,p2,p3 = map(np.array, self.picked_points); norm = np.cross(p2-p1, p3-p1); norm /= np.linalg.norm(norm)
-            rx = np.degrees(np.arctan2(norm[1], norm[2])); rz = -np.degrees(np.arctan2(norm[0], np.sqrt(norm[1]**2+norm[2]**2)))
-            self.srt_ctrl['RotX'].setValue(float(rx)); self.srt_ctrl['RotZ'].setValue(float(rz)); self.finish_pick()
-
-    def start_pick(self, m):
-        try: self.plotter.disable_picking()
-        except: pass
-        for b in self.pick_btn_map.values(): b.setChecked(False)
-        self.pick_btn_map[m].setChecked(True); self.pick_mode = m; self.picked_points = []
-        self.plotter.enable_point_picking(callback=self.pick_callback, show_message=True, color='yellow', point_size=12)
-
-    def finish_pick(self): self.plotter.disable_picking(); self.pick_mode = None; [b.setChecked(False) for b in self.pick_btn_map.values()]; self.update_preview()
-    def sync_crop_ui(self):
+    def open_in_npp(self): subprocess.Popen([r"C:\Program Files\Notepad++\notepad++.exe", self.settings_file]) if os.path.exists(r"C:\Program Files\Notepad++\notepad++.exe") else os.startfile(self.settings_file)
+    def bake_srt(self):
         if not self.cloud_poly: return
+        # Apply transform to display mesh
+        self.cloud_poly = self.cloud_poly.transform(self.get_mat())
+        # Also update the stored COLMAP-space xyz values so export stays in sync
+        S, R_c, T_c = self.get_colmap_srt()
+        for p in self.proj.points3D.values():
+            p['xyz'] = S * (R_c @ p['xyz']) + T_c
+        # Also bake camera poses
+        for img in self.proj.images.values():
+            R_cw = qvec2rotmat(img['qvec'])
+            t_cw = np.array(img['tvec'])
+            C        = -R_cw.T @ t_cw
+            C_new    = S * (R_c @ C) + T_c
+            R_cw_new = R_cw @ R_c.T
+            t_cw_new = -R_cw_new @ C_new
+            img['qvec'] = rotmat2qvec(R_cw_new)
+            img['tvec'] = t_cw_new
+        for k, s in self.srt_ctrl.items():
+            s.blockSignals(True); s.setValue(1.0 if k == 'Scale' else 0.0); s.blockSignals(False)
+        self.set_bake_state(False); self.update_preview()
+        self._write_logfile(event="bake")
+    def _write_logfile(self, event="bake", output_folder=None, export_fmt=None,
+                       points_exported=None, points_total=None):
+        """Write logfile.json next to settings.json recording what was applied."""
+        import datetime
+        log_path = os.path.join(os.path.dirname(self.settings_file), "logfile.json")
+
+        # Load existing log (list of entries) or start fresh
+        if os.path.exists(log_path):
+            try:
+                with open(log_path, "r") as f: log = json.load(f)
+                if not isinstance(log, list): log = []
+            except Exception: log = []
+        else:
+            log = []
+
+        # Capture current SRT values (pre-reset for bake, live values for export)
+        srt = {k: float(v.value()) for k, v in self.srt_ctrl.items()}
+
+        # Capture current crop state
+        axis_labels = ["X", "Y", "Z"]
+        crop = {}
+        for i, ax in enumerate(axis_labels):
+            crop[ax] = {"min": float(self.current_crop[2*i]),
+                        "max": float(self.current_crop[2*i+1])}
+
+        entry = {
+            "timestamp":     datetime.datetime.now().isoformat(timespec="seconds"),
+            "event":         event,
+            "source_file":   str(self.proj.load.__self__.__class__.__name__) if self.proj else None,
+            "points_total":  len(self.proj.points3D) if self.proj else 0,
+            "cameras_total": len(self.proj.cameras)  if self.proj else 0,
+            "images_total":  len(self.proj.images)   if self.proj else 0,
+            "fov":           float(self.spin_fov.value()),
+            "srt": {
+                "Scale":  srt.get("Scale",  1.0),
+                "RotX":   srt.get("RotX",   0.0),
+                "RotY":   srt.get("RotY",   0.0),
+                "RotZ":   srt.get("RotZ",   0.0),
+                "TransX": srt.get("TransX", 0.0),
+                "TransY": srt.get("TransY", 0.0),
+                "TransZ": srt.get("TransZ", 0.0),
+            },
+            "crop": crop,
+        }
+        if output_folder:   entry["output_folder"]    = output_folder
+        if export_fmt:      entry["export_fmt"]        = export_fmt
+        if points_total is not None:
+            entry["points_total"]    = points_total
+            entry["points_exported"] = points_exported if points_exported is not None else points_total
+            entry["points_cropped"]  = points_total - (points_exported or points_total)
+
+        log.append(entry)
+        try:
+            with open(log_path, "w") as f: json.dump(log, f, indent=2)
+            print(f"[log] Written → {log_path}")
+        except Exception as e:
+            print(f"[log] Failed to write logfile: {e}")
+
+    def on_srt_change(self):
+        self.btn_bake.setStyleSheet("background-color: #d32f2f; color: white;")
+        if not hasattr(self, '_srt_timer'):
+            from PyQt5.QtCore import QTimer
+            self._srt_timer = QTimer(); self._srt_timer.setSingleShot(True)
+            self._srt_timer.timeout.connect(self.update_preview)
+        self._srt_timer.start(50)  # ms debounce — fires once after slider stops
+    def set_bake_state(self, d): self.btn_bake.setStyleSheet(f"background-color: {'#d32f2f' if d else '#2e7d32'}; color: white; font-weight: bold;")
+    def update_step_sizes(self): [c.setSingleStep(self.spin_step.value()) for c in self.srt_ctrl.values()]
+    def sync_crop_ui(self):
         idx = self.axis_sel.currentIndex(); d_min, d_max = self.bounds[2*idx], self.bounds[2*idx+1]
         for l in ['min', 'max']:
-            sp, sl = self.crop_ui[l], self.crop_ui[f"{l}_sl"]; sp.blockSignals(True); sl.blockSignals(True)
-            sp.setRange(d_min-5000, d_max+5000); sp.setValue(self.current_crop[2*idx + (0 if l=='min' else 1)])
-            pct = (sp.value()-d_min)/(d_max-d_min) if d_max!=d_min else 0.5; sl.setValue(int(pct*1000)); sp.blockSignals(False); sl.blockSignals(False)
+            self.crop_ui[l].blockSignals(True); self.crop_ui[l].setRange(d_min-5000, d_max+5000)
+            self.crop_ui[l].setValue(self.current_crop[2*idx+(0 if l=='min' else 1)]); self.crop_ui[l].blockSignals(False)
         self.update_preview()
-    def on_srt_change(self):
-        is_dirty = any([abs(self.srt_ctrl['Scale'].value()-1.0)>1e-4, any(abs(self.srt_ctrl[k].value())>1e-4 for k in ['RotX','RotY','RotZ','TransX','TransY','TransZ'])])
-        self.btn_bake.setStyleSheet(f"background-color: {'#d32f2f' if is_dirty else '#2e7d32'}; color: white;"); self.update_preview()
     def on_slider_move(self):
         idx = self.axis_sel.currentIndex(); d_min, d_max = self.bounds[2*idx], self.bounds[2*idx+1]
-        for l in ['min', 'max']:
-            sp, sl = self.crop_ui[l], self.crop_ui[f"{l}_sl"]; sp.blockSignals(True); sp.setValue(d_min + (sl.value()/1000.0)*(d_max-d_min)); sp.blockSignals(False)
-        self.update_preview()
-    def update_histogram(self, pts):
-        self.hist_plotter.clear(); idx = self.axis_sel.currentIndex(); data = pts[:, idx]
-        counts, self.bins = np.histogram(data, bins=100); chart = pv.Chart2D(); chart.bar(self.bins[:-1], counts, color=["#FF6666","#66FF66","#6666FF"][idx])
-        c_min, c_max = self.current_crop[2*idx], self.current_crop[2*idx+1]
-        chart.line([c_min, c_min], [0, counts.max()], color="black", width=2); chart.line([c_max, c_max], [0, counts.max()], color="black", width=2, style="--"); self.hist_plotter.add_chart(chart); self.hist_plotter.render()
-    def on_hist_click(self, o, e, mode):
-        if not hasattr(self, 'bins'): return
-        x, _ = o.GetEventPosition(); pct = (x/self.hist_plotter.width() - 0.08)/0.84
-        val = self.bins[int(np.clip(pct, 0, 1) * (len(self.bins)-1))]; self.crop_ui[mode].setValue(val)
+        for l in ['min', 'max']: self.crop_ui[l].setValue(d_min + (self.crop_ui[f"{l}_sl"].value()/1000.0)*(d_max-d_min))
     def auto_crop_stat(self, pct):
-        for i in range(3):
-            d = self.cloud_poly.points[:,i]
-            self.current_crop[2*i], self.current_crop[2*i+1] = np.percentile(d, (1-pct)/2*100), np.percentile(d, (1-(1-pct)/2)*100)
+        for i in range(3): d = self.cloud_poly.points[:,i]; self.current_crop[2*i], self.current_crop[2*i+1] = float(np.percentile(d, (1-pct)/2*100)), float(np.percentile(d, (1-(1-pct)/2)*100))
         self.sync_crop_ui()
     def reset_crop(self):
-        if self.cloud_poly: self.current_crop = list(self.bounds); self.sync_crop_ui()
-    def bake_srt(self):
-        if self.cloud_poly: self.cloud_poly.transform(self.get_mat(), inplace=True)
-        for k, sp in self.srt_ctrl.items(): sp.blockSignals(True); sp.setValue(1.0 if k=='Scale' else 0.0); sp.blockSignals(False)
-        self.on_srt_change()
-    def get_mat(self):
-        S = self.srt_ctrl['Scale'].value(); R_m = Rot.from_euler('xyz', [self.srt_ctrl['RotX'].value(), self.srt_ctrl['RotY'].value(), self.srt_ctrl['RotZ'].value()], degrees=True).as_matrix()
-        mat = np.eye(4); mat[:3,:3] = R_m * S; mat[:3,3] = [self.srt_ctrl['TransX'].value(), self.srt_ctrl['TransY'].value(), self.srt_ctrl['TransZ'].value()]
-        return mat
+        if self.cloud_poly: self.current_crop = [float(x) for x in self.bounds]; self.sync_crop_ui()
     def apply_view_preset(self, idx):
         angles = [(0,0,-200),(0,0,200),(-200,0,0),(200,0,0),(0,200,0),(-200,200,-200),(200,200,-200),(-200,200,200),(200,200,200)]
         self.plotter.camera_position = [angles[idx], (0,0,0), (0,1,0)]; self.plotter.reset_camera()
-    def update_step_sizes(self): [c.setSingleStep(self.spin_step.value()) for c in self.srt_ctrl.values()]
-    def on_ui_change(self): self.update_preview()
-    def closeEvent(self, event):
-        if hasattr(self, 'plotter'): [p.close() for p in [self.plotter, self.hist_plotter]]
-        event.accept()
+    def closeEvent(self, event): self.plotter.close(); self.hist_plotter.close(); event.accept()
 
 if __name__ == "__main__":
     app = QApplication(sys.argv); ex = COLMAPExplorer(); ex.show(); sys.exit(app.exec_())
