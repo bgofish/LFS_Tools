@@ -1,4 +1,4 @@
-# "LichtFeld Studio | COLMAP Point Editor v0.1.2"
+# "LichtFeld Studio | COLMAP Point Editor v0.1.5"
 #================================================
 import sys, os, struct, json, subprocess
 import numpy as np
@@ -6,8 +6,10 @@ import pyvista as pv
 from pyvistaqt import QtInteractor
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QVBoxLayout, QHBoxLayout,
                              QPushButton, QWidget, QFileDialog, QSlider, QLabel, 
-                             QComboBox, QGroupBox, QDoubleSpinBox, QRadioButton, QGridLayout)
+                             QComboBox, QGroupBox, QDoubleSpinBox, QRadioButton, QGridLayout, QButtonGroup)
+from PyQt5.QtGui import QKeySequence
 from PyQt5.QtCore import Qt
+from PyQt5.QtWidgets import QShortcut
 from scipy.spatial.transform import Rotation as Rot
 import vtk
 
@@ -26,10 +28,10 @@ def rotmat2qvec(R):
     return np.array([q[3], q[0], q[1], q[2]]) # w, x, y, z
 
 class COLMAPProject:
-    def __init__(self): self.cameras, self.images, self.points3D = {}, {}, {}
+    def __init__(self): self.cameras, self.images, self.points3D, self.is_bin = {}, {}, {}, True
     def load(self, folder):
-        is_bin = os.path.exists(os.path.join(folder, "points3D.bin"))
-        if is_bin: self._load_bin(folder)
+        self.is_bin = os.path.exists(os.path.join(folder, "points3D.bin"))
+        if self.is_bin: self._load_bin(folder)
         else: self._load_txt(folder)
 
     def _load_bin(self, folder):
@@ -67,18 +69,74 @@ class COLMAPProject:
                     self.cameras[cid] = {'model': model, 'hw': (w,h), 'params': params}
 
     def _load_txt(self, folder):
+        # --- points3D.txt ---
         p_path = os.path.join(folder, "points3D.txt")
         if os.path.exists(p_path):
             with open(p_path, "r") as f:
                 for line in f:
                     if line.startswith("#") or not line.strip(): continue
                     p = line.split()
-                    self.points3D[int(p[0])] = {'xyz': np.array(p[1:4], float), 'rgb': np.array(p[4:7], int), 'err': float(p[7]), 'tracks': p[8:]}
+                    self.points3D[int(p[0])] = {
+                        'xyz':    np.array(p[1:4], float),
+                        'rgb':    np.array(p[4:7], int),
+                        'err':    float(p[7]),
+                        'tracks': p[8:]
+                    }
+
+        # --- cameras.txt ---
+        MODEL_IDS = {"SIMPLE_PINHOLE":0,"PINHOLE":1,"SIMPLE_RADIAL":2,"RADIAL":3,
+                     "OPENCV":4,"OPENCV_FISHEYE":5,"FULL_OPENCV":6}
+        c_path = os.path.join(folder, "cameras.txt")
+        if os.path.exists(c_path):
+            with open(c_path, "r") as f:
+                for line in f:
+                    if line.startswith("#") or not line.strip(): continue
+                    p = line.split()
+                    if len(p) < 5: continue
+                    cid    = int(p[0])
+                    model  = MODEL_IDS.get(p[1], 1)
+                    w, h   = int(p[2]), int(p[3])
+                    params = tuple(float(x) for x in p[4:])
+                    self.cameras[cid] = {'model': model, 'hw': (w, h), 'params': params}
+
+        # --- images.txt ---
+        i_path = os.path.join(folder, "images.txt")
+        if os.path.exists(i_path):
+            with open(i_path, "r") as f:
+                lines = [l for l in f if not l.startswith("#") and l.strip()]
+            idx = 0
+            while idx < len(lines) - 1:
+                p = lines[idx].split()
+                if len(p) < 9: idx += 1; continue
+                iid    = int(p[0])
+                qvec   = np.array(p[1:5], float)
+                tvec   = np.array(p[5:8], float)
+                cam_id = int(p[8])
+                name   = p[9] if len(p) > 9 else ""
+                # Second line: X Y POINT3D_ID triplets — store as bytes to match bin format
+                p2d_parts = lines[idx + 1].split()
+                p2d_bytes = b""
+                for j in range(0, len(p2d_parts) - 2, 3):
+                    try:
+                        x2   = float(p2d_parts[j])
+                        y2   = float(p2d_parts[j + 1])
+                        p3id = int(p2d_parts[j + 2])
+                        p2d_bytes += struct.pack("<ddq", x2, y2, p3id)
+                    except (ValueError, IndexError):
+                        break
+                self.images[iid] = {
+                    'qvec':   qvec,
+                    'tvec':   tvec,
+                    'cam_id': cam_id,
+                    'name':   name,
+                    'p2d':    p2d_bytes
+                }
+                idx += 2
 
 class COLMAPExplorer(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("LichtFeld Studio | COLMAP Point Editor v0.1.2")
+        self.setWindowTitle("LichtFeld Studio | COLMAP Point Editor v0.1.5")
         self.resize(1750, 1050); self.proj, self.cloud_poly = None, None
         self.bounds = [0.0]*6; self.current_crop = [0.0]*6; self.bins = None
         self.picked_pts, self.pick_mode = [], None
@@ -89,21 +147,36 @@ class COLMAPExplorer(QMainWindow):
 
         # IO & SYSTEM
         set_grp = QGroupBox("System"); h_set = QHBoxLayout()
-        for t, f in [("Read", self.load_settings), ("Write", self.save_settings), ("N++", self.open_in_npp)]:
+        for t, f in [("Read", self.load_settings), ("Write", self.save_settings), ("Notepad++", self.open_in_npp)]:
             btn = QPushButton(t); btn.clicked.connect(f); h_set.addWidget(btn)
         p_v = QVBoxLayout(); p_v.addLayout(h_set)
         btn_load = QPushButton("📂 Import Project"); btn_load.clicked.connect(self.open_file)
         self.btn_bake = QPushButton("✅ SRT Baked"); self.btn_bake.clicked.connect(self.bake_srt)
         export_row = QHBoxLayout()
         btn_export = QPushButton("💾 Export COLMAP"); btn_export.clicked.connect(self.export_project)
-        self.combo_export_fmt = QComboBox(); self.combo_export_fmt.addItems(["BIN", "TXT"]); self.combo_export_fmt.setFixedWidth(55)
-        export_row.addWidget(btn_export); export_row.addWidget(self.combo_export_fmt)
-        p_v.addWidget(btn_load); p_v.addWidget(self.btn_bake); p_v.addLayout(export_row); set_grp.setLayout(p_v); sidebar.addWidget(set_grp)
+        export_row.addWidget(btn_export)
+        fmt_row = QHBoxLayout()
+        self.radio_bin = QRadioButton("BIN"); self.radio_bin.setChecked(True)
+        self.radio_txt = QRadioButton("TXT")
+        fmt_grp = QButtonGroup(self); fmt_grp.addButton(self.radio_bin); fmt_grp.addButton(self.radio_txt)
+        fmt_row.addWidget(QLabel("Format:")); fmt_row.addWidget(self.radio_bin); fmt_row.addWidget(self.radio_txt); fmt_row.addStretch()
+        p_v.addWidget(btn_load); p_v.addWidget(self.btn_bake); p_v.addLayout(export_row); p_v.addLayout(fmt_row)
+        set_grp.setLayout(p_v); sidebar.addWidget(set_grp)
 
         # VIEW & ALIGN
         v_grp = QGroupBox("View & Alignment"); v_v = QVBoxLayout(); grid = QGridLayout()
-        for i in range(9):
-            btn = QPushButton(f"V0{i+1}"); btn.clicked.connect(lambda c, idx=i: self.apply_view_preset(idx)); grid.addWidget(btn, i//3, i%3)
+        view_labels = ["NW", "BACK", "NE", "LEFT", "TOP", "RIGHT", "SW", "FRONT", "SE"]
+        numpad_keys = [Qt.Key_7, Qt.Key_8, Qt.Key_9,
+                       Qt.Key_4, Qt.Key_5, Qt.Key_6,
+                       Qt.Key_1, Qt.Key_2, Qt.Key_3]
+        numpad_display = [7, 8, 9, 4, 5, 6, 1, 2, 3]
+        for i, (label, key, num) in enumerate(zip(view_labels, numpad_keys, numpad_display)):
+            btn = QPushButton(f"{label}\n[Num {num}]")
+            btn.clicked.connect(lambda c, idx=i: self.apply_view_preset(idx))
+            btn.setToolTip(f"Numpad {num}")
+            grid.addWidget(btn, i//3, i%3)
+            sc = QShortcut(QKeySequence(key | Qt.KeypadModifier), self)
+            sc.activated.connect(lambda idx=i: self.apply_view_preset(idx))
         v_v.addLayout(grid)
         self.spin_fov = QDoubleSpinBox(); self.spin_fov.setRange(10, 120); self.spin_fov.setValue(45)
         self.spin_fov.valueChanged.connect(self.update_preview)
@@ -223,7 +296,7 @@ class COLMAPExplorer(QMainWindow):
     def export_project(self):
         f = QFileDialog.getExistingDirectory(self, "Export Folder")
         if not (f and self.proj): return
-        use_bin = self.combo_export_fmt.currentText() == "BIN"
+        use_bin = self.radio_bin.isChecked()
         S, R_c, T_c = self.get_colmap_srt()
 
         def _transform_image(img):
@@ -422,6 +495,8 @@ class COLMAPExplorer(QMainWindow):
         pts = np.vstack([v['xyz'] * [1, -1, 1] for v in self.proj.points3D.values()]).astype(np.float32)
         rgbs = np.vstack([v['rgb'] for v in self.proj.points3D.values()]).astype(np.uint8)
         self.cloud_poly = pv.PolyData(pts); self.cloud_poly.point_data["rgb"] = rgbs
+        self.radio_bin.setChecked(self.proj.is_bin)
+        self.radio_txt.setChecked(not self.proj.is_bin)
         self.bounds = [float(pts[:,0].min()), float(pts[:,0].max()), float(pts[:,1].min()), float(pts[:,1].max()), float(pts[:,2].min()), float(pts[:,2].max())]
         self.reset_crop()
 
@@ -539,9 +614,21 @@ class COLMAPExplorer(QMainWindow):
     def reset_crop(self):
         if self.cloud_poly: self.current_crop = [float(x) for x in self.bounds]; self.sync_crop_ui()
     def apply_view_preset(self, idx):
-        #angles = [(0,0,-200),(0,0,200),(-200,0,0),(200,0,0),(0,200,0),(-200,200,-200),(200,200,-200),(-200,200,200),(200,200,200)]
-        angles = [(-200,200,-200), (0,0,-200),(200,200,-200), (-200,0,0), (0,200,0),(200,0,0), 	(-200,200,200), (0,0,200),  (200,200,200)]        
-        self.plotter.camera_position = [angles[idx], (0,0,0), (0,1,0)]; self.plotter.reset_camera()
+        # position, focal_point, view_up
+        presets = [
+            ((-200,200,-200),  (0,0,0), (0,1,0)),   # 7 NW
+            ((0,0, -200),  (0,0,0), (0,1,0)),   # 8 BACK
+            ((200,200,-200),  (0,0,0), (0,1,0)),   # 9 NE
+            ((-200,0,0),  (0,0,0), (0,1,0)),   # 4 LEFT
+            ((0, 200,0),  (0,0,0), (0,0,-1)),  # 5 TOP  (180° rotated — up = -Z)
+            ((200,0,0),(0,0,0),(0,1,0)), # 6 RIGHT
+            ((-200,200, 200),(0,0,0),(0,1,0)), # 1 SW
+            ((0,0,200),(0,0,0),(0,1,0)), # 2 FRONT
+            (( 200,200, 200),(0,0,0),(0,1,0)), # 3 SE
+        ]
+        pos, foc, up = presets[idx]
+        self.plotter.camera_position = [pos, foc, up]; self.plotter.reset_camera()
+
     def closeEvent(self, event): self.plotter.close(); self.hist_plotter.close(); event.accept()
 
 if __name__ == "__main__":
