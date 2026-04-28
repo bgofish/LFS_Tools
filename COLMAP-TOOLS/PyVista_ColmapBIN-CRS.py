@@ -82,7 +82,7 @@ class COLMAPExplorer(QMainWindow):
         self.resize(1750, 1050); self.proj, self.cloud_poly = None, None
         self.bounds = [0.0]*6; self.current_crop = [0.0]*6; self.bins = None
         self.picked_pts, self.pick_mode = [], None
-        self.settings_file = os.path.join(os.path.dirname(__file__), "settings.json")
+        self.settings_file = os.path.join(os.path.dirname(__file__), "PyVista_Colmap_settings.json")
 
         central = QWidget(); self.setCentralWidget(central)
         main_layout = QHBoxLayout(central); sidebar = QVBoxLayout()
@@ -459,7 +459,7 @@ class COLMAPExplorer(QMainWindow):
         self._write_logfile(event="bake")
     def _write_logfile(self, event="bake", output_folder=None, export_fmt=None,
                        points_exported=None, points_total=None):
-        """Write logfile.json next to settings.json recording what was applied."""
+        """Write logfile.json next to PyVista_Colmap_settings.json recording what was applied."""
         import datetime
         log_path = os.path.join(os.path.dirname(self.settings_file), "logfile.json")
 
