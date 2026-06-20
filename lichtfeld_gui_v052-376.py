@@ -12,7 +12,7 @@ from pathlib import Path
 class LichtFeldStudioDialog:
     def __init__(self, root):
         self.root = root
-        self.root.title("LichtFeld Studio CLI Batch File Generator v0.6.0 - 3D Gaussian Splatting")
+        self.root.title("LichtFeld Studio CLI Batch File Generator v0.5.2 376 - 3D Gaussian Splatting")
         self.root.geometry("985x1100")
         
         # Variables to store all options
