@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
 """
 COLMAP → LichtFeld Studio Camera Path Converter
-Drag-and-drop a cameras.txt OR cameras.bin + images.txt OR images.bin
-(either file or the folder containing them) onto this window.
+Drag-and-drop any of the following onto this window (mix and match):
+  - the cameras/images .txt or .bin files themselves
+  - the "sparse/0" folder that contains them
+  - the top-level COLMAP project folder (searched recursively, bounded
+    depth, so any layout — sparse/0, distorted/sparse/0, colmap/sparse/0,
+    etc. — is found automatically)
 
 Output: <same folder>/<stem>_lfs.json  ready to load into LFS sequencer.
 
@@ -26,7 +30,9 @@ Steps per image:
   2. Convert position:  t_world = -R_cw^T · t_colmap
   3. Flip Y axis: pos_lfs = (x, -y, z)
   4. Build R_lfs from R_wc with Y-flip: negate rows/cols touching Y
-  5. Convert R_lfs to quaternion  (SuperSplat +Z-forward convention)
+  5. Roll +90° about the camera's own forward (camera→target) axis, to
+     match LFS's camera orientation convention (adjustable, default 90°)
+  6. Convert R_lfs to quaternion  (SuperSplat +Z-forward convention)
 
 Timeline: images are sorted by filename (natural sort), spaced by
 user-supplied FPS or duration.
@@ -136,6 +142,20 @@ def _mat_vec(m, v):
     return [sum(m[i][j] * v[j] for j in range(3)) for i in range(3)]
 
 
+def _mat_mul(a, b):
+    """3×3 matrix multiply: a·b (row-major)."""
+    return [[sum(a[i][k] * b[k][j] for k in range(3)) for j in range(3)] for i in range(3)]
+
+
+def _rot_z(deg):
+    """Rotation matrix about the LOCAL +Z axis (camera-to-target / forward axis), in degrees."""
+    t = math.radians(deg)
+    c, s = math.cos(t), math.sin(t)
+    return [[c, -s, 0.0],
+            [s,  c, 0.0],
+            [0.0, 0.0, 1.0]]
+
+
 def _matrix_to_quat(m):
     """3×3 rotation matrix → (qw, qx, qy, qz), SuperSplat +Z-forward convention."""
     trace = m[0][0] + m[1][1] + m[2][2]
@@ -174,10 +194,16 @@ def _natural_key(s):
 
 def convert(images_path: Path, cameras_path: Path,
             fps: float, sensor_mm: float, focal_override_mm: float | None,
-            scale: float) -> dict:
+            scale: float, roll_deg: float = 90.0) -> dict:
     """
     Convert COLMAP sparse model to LFS camera path JSON.
     Returns the dict ready for json.dump.
+
+    roll_deg: extra rotation (degrees) applied about the camera's own
+              forward axis (the camera→target viewing direction) after
+              the COLMAP→LFS conversion. LFS cameras come out rolled
+              -90° relative to COLMAP's convention, so the default here
+              is +90° to compensate. Set to 0 to disable.
     """
     # ── Load data ──────────────────────────────────────────────────────────────
     if cameras_path.suffix == ".bin":
@@ -227,7 +253,7 @@ def convert(images_path: Path, cameras_path: Path,
         # Position: flip Y
         px =  t_world[0] * scale
         py = -t_world[1] * scale
-        pz =  t_world[2] * scale
+        pz = -t_world[2] * scale
 
         # Rotation conversion COLMAP → SuperSplat (+Z-forward, +Y-up):
         # R_wc columns are camera axes in COLMAP world space (+Y down).
@@ -247,6 +273,14 @@ def convert(images_path: Path, cameras_path: Path,
             return r
 
         R_lfs = _to_lfs_rot(R_wc)
+
+        # Roll the camera about its own forward axis (the camera→target
+        # line). Post-multiplying applies the rotation in the camera's
+        # LOCAL frame, i.e. it spins the view around its own look direction
+        # rather than around a world axis.
+        if roll_deg:
+            R_lfs = _mat_mul(R_lfs, _rot_z(roll_deg))
+
         rqw, rqx, rqy, rqz = _matrix_to_quat(R_lfs)
 
         keyframes.append({
@@ -262,52 +296,69 @@ def convert(images_path: Path, cameras_path: Path,
 
 # ── File discovery ────────────────────────────────────────────────────────────
 
+def _find_in_tree(d: Path, stem: str, max_depth: int = 5):
+    """
+    Search a directory tree (bounded depth) for '<stem>.bin' first, then
+    '<stem>.txt', preferring the shallowest match. Handles any COLMAP
+    layout — e.g. project/sparse/0/, project/distorted/sparse/0/,
+    project/colmap/sparse/0/, or the files sitting right at the root.
+    Returns a Path or None.
+    """
+    for ext in (".bin", ".txt"):
+        target = f"{stem}{ext}"
+        best = None  # (depth, path)
+        for root, dirs, files in os.walk(d):
+            depth = len(Path(root).relative_to(d).parts)
+            if depth > max_depth:
+                dirs[:] = []  # don't descend further (e.g. into huge image dirs)
+                continue
+            if target in files:
+                candidate = Path(root) / target
+                if best is None or depth < best[0]:
+                    best = (depth, candidate)
+        if best is not None:
+            return best[1]
+    return None
+
+
 def _find_colmap_files(paths: list[str]):
     """
-    Given a list of dropped paths (files or folders), find:
+    Given a list of dropped paths (files or folders — the COLMAP project
+    folder, the 'sparse/0' folder, or the cameras/images files themselves,
+    in any combination), find:
       - images file  (.txt or .bin)
       - cameras file (.txt or .bin)
     Returns (images_path, cameras_path, search_dir) or raises FileNotFoundError.
     """
-    search_dirs = set()
+    search_dirs = []
     explicit_images  = None
     explicit_cameras = None
 
     for p in paths:
         p = Path(p)
         if p.is_dir():
-            search_dirs.add(p)
+            if p not in search_dirs:
+                search_dirs.append(p)
         elif p.name in ("images.txt", "images.bin"):
             explicit_images = p
-            search_dirs.add(p.parent)
+            if p.parent not in search_dirs:
+                search_dirs.append(p.parent)
         elif p.name in ("cameras.txt", "cameras.bin"):
             explicit_cameras = p
-            search_dirs.add(p.parent)
+            if p.parent not in search_dirs:
+                search_dirs.append(p.parent)
         else:
-            search_dirs.add(p.parent)
+            if p.parent not in search_dirs:
+                search_dirs.append(p.parent)
 
-    # Search directories for the files
+    # Search each dropped/implied directory (bounded-depth recursive walk)
     for d in search_dirs:
         if explicit_images is None:
-            for name in ("images.bin", "images.txt"):
-                if (d / name).exists():
-                    explicit_images = d / name; break
-            # also check sparse/0/
-            for sub in ("sparse/0", "sparse"):
-                for name in ("images.bin", "images.txt"):
-                    if (d / sub / name).exists():
-                        explicit_images = d / sub / name; break
-                if explicit_images: break
-
+            explicit_images = _find_in_tree(d, "images")
         if explicit_cameras is None:
-            for name in ("cameras.bin", "cameras.txt"):
-                if (d / name).exists():
-                    explicit_cameras = d / name; break
-            for sub in ("sparse/0", "sparse"):
-                for name in ("cameras.bin", "cameras.txt"):
-                    if (d / sub / name).exists():
-                        explicit_cameras = d / sub / name; break
-                if explicit_cameras: break
+            explicit_cameras = _find_in_tree(d, "cameras")
+        if explicit_images and explicit_cameras:
+            break
 
     if explicit_images is None:
         raise FileNotFoundError("Could not find images.txt or images.bin")
@@ -368,7 +419,8 @@ class App(tk.Tk):
         ttk.Separator(root).pack(fill="x", pady=10)
 
         # ── Drop zone ─────────────────────────────────────────────────────────
-        self._drop_var = tk.StringVar(value="Drop  images.txt / images.bin  (or folder) here")
+        self._drop_var = tk.StringVar(
+            value="Drop the COLMAP project folder, or the cameras/images .txt / .bin files, here")
         drop_card = tk.Frame(root, bg=BG2, bd=0, highlightthickness=2,
                              highlightbackground="#3c4466", cursor="hand2")
         drop_card.pack(fill="x", pady=(0, 12))
@@ -411,14 +463,18 @@ class App(tk.Tk):
         self._sensor_var = tk.StringVar(value="36")
         self._focal_var  = tk.StringVar(value="")   # blank = derive from COLMAP
         self._scale_var  = tk.StringVar(value="1.0")
+        self._roll_var   = tk.StringVar(value="90")  # camera roll about its own forward axis
 
         row(opt, 0, "FPS:",           self._fps_var,    col=0)
         row(opt, 0, "Sensor (mm):",   self._sensor_var, col=2)
         row(opt, 1, "Scale:",         self._scale_var,  col=0)
         row(opt, 1, "Focal override (mm):", self._focal_var, col=2)
+        row(opt, 2, "Roll (deg):",    self._roll_var,   col=0)
 
         ttk.Label(opt, text="Leave Focal blank to derive from COLMAP intrinsics",
-                  style="Dim.TLabel").grid(row=2, column=0, columnspan=4, sticky="w", pady=(2,0))
+                  style="Dim.TLabel").grid(row=3, column=0, columnspan=4, sticky="w", pady=(2,0))
+        ttk.Label(opt, text="Roll rotates each camera about its own camera→target axis (LFS default needs +90°)",
+                  style="Dim.TLabel").grid(row=4, column=0, columnspan=4, sticky="w", pady=(2,0))
 
         ttk.Separator(root).pack(fill="x", pady=10)
 
@@ -432,7 +488,7 @@ class App(tk.Tk):
                                     wraplength=480, justify="left")
         self._status_lbl.pack(anchor="w", pady=(8, 0))
 
-        self.geometry("520x420")
+        self.geometry("520x460")
         self.update_idletasks()
 
     # ── DnD ───────────────────────────────────────────────────────────────────
@@ -534,6 +590,7 @@ class App(tk.Tk):
             fps    = float(self._fps_var.get())
             sensor = float(self._sensor_var.get())
             scale  = float(self._scale_var.get())
+            roll   = float(self._roll_var.get())
             focal_str = self._focal_var.get().strip()
             focal  = float(focal_str) if focal_str else None
         except ValueError as e:
@@ -542,7 +599,7 @@ class App(tk.Tk):
         try:
             data = convert(self._images_path, self._cameras_path,
                            fps=fps, sensor_mm=sensor,
-                           focal_override_mm=focal, scale=scale)
+                           focal_override_mm=focal, scale=scale, roll_deg=roll)
         except Exception as e:
             self._status(f"⚠  Conversion failed: {e}", False); return
 
